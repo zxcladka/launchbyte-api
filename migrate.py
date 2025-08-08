@@ -36,10 +36,11 @@ logger = logging.getLogger(__name__)
 class Migration:
     """Клас для представлення міграції."""
 
-    def __init__(self, version: str, name: str, description: str):
+    def __init__(self, version: str, name: str, description: str, rollback_sql: str = ""):
         self.version = version
         self.name = name
         self.description = description
+        self.rollback_sql = rollback_sql
         self.executed_at: Optional[datetime] = None
         self.success = False
         self.error_message: Optional[str] = None
@@ -91,7 +92,7 @@ class DatabaseMigrator:
                         rollback_sql TEXT,
                         INDEX idx_version (version),
                         INDEX idx_executed_at (executed_at)
-                    )
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """))
                 connection.commit()
                 logger.info("Schema migrations table ensured")
@@ -156,6 +157,24 @@ class DatabaseMigrator:
         try:
             indexes = self.inspector.get_indexes(table_name)
             return any(idx['name'] == index_name for idx in indexes)
+        except Exception:
+            return False
+
+    def constraint_exists(self, table_name: str, constraint_name: str) -> bool:
+        """Перевіряє чи існує обмеження."""
+        try:
+            with self.engine.connect() as connection:
+                result = connection.execute(text("""
+                    SELECT COUNT(*) as count FROM information_schema.TABLE_CONSTRAINTS 
+                    WHERE TABLE_SCHEMA = :schema_name 
+                    AND TABLE_NAME = :table_name 
+                    AND CONSTRAINT_NAME = :constraint_name
+                """), {
+                    "schema_name": settings.DB_NAME,
+                    "table_name": table_name,
+                    "constraint_name": constraint_name
+                })
+                return result.scalar() > 0
         except Exception:
             return False
 
@@ -245,6 +264,43 @@ class DatabaseMigrator:
 
             Migration("018", "optimize_database_settings",
                       "Оптимізує налаштування бази даних"),
+
+            # НОВЫЕ МИГРАЦИИ для команды и "О нас"
+            Migration("019", "create_about_content_table",
+                      "Створює таблицю about_content для сторінки 'Про нас'"),
+
+            Migration("020", "create_team_members_table",
+                      "Створює таблицю team_members для команди"),
+
+            Migration("021", "add_user_password_fields",
+                      "Додає поля password_changed_at та last_login до users"),
+
+            Migration("022", "enhance_email_logs_table",
+                      "Покращує структуру таблиці email_logs"),
+
+            Migration("023", "add_avatar_fields_to_team",
+                      "Додає поля для аватарок до team_members"),
+
+            Migration("024", "create_admin_activity_log",
+                      "Створює таблицю для логування дій адміністратора"),
+
+            Migration("025", "add_seo_fields_to_about",
+                      "Додає SEO поля до about_content"),
+
+            Migration("026", "optimize_team_indexes",
+                      "Оптимізує індекси для таблиці team_members"),
+
+            Migration("027", "add_backup_settings",
+                      "Додає налаштування для автоматичного резервного копіювання"),
+
+            Migration("028", "enhance_security_logging",
+                      "Покращує систему безпеки та логування"),
+
+            Migration("029", "create_file_categories_table",
+                      "Створює таблицю для категорій файлів"),
+
+            Migration("030", "add_multilingual_support",
+                      "Додає покращену підтримку багатомовності")
         ]
 
         return migrations
@@ -489,19 +545,19 @@ class DatabaseMigrator:
     def migration_013_create_performance_indexes(self) -> bool:
         """Міграція 013: Створює індекси для покращення продуктивності."""
         indexes = [
-            ("idx_designs_category_published", "designs", "category, is_published"),
+            ("idx_designs_category_published", "designs", "category_id, is_published"),
             ("idx_designs_featured", "designs", "is_featured"),
             ("idx_designs_published_sort", "designs", "is_published, sort_order"),
-            ("idx_reviews_approved", "reviews", "approved"),
+            ("idx_reviews_approved", "reviews", "is_approved"),
             ("idx_reviews_featured", "reviews", "is_featured"),
-            ("idx_reviews_approved_featured", "reviews", "approved, is_featured"),
+            ("idx_reviews_approved_featured", "reviews", "is_approved, is_featured"),
             ("idx_quote_apps_status", "quote_applications", "status"),
             ("idx_quote_apps_created", "quote_applications", "created_at"),
             ("idx_consultation_apps_status", "consultation_applications", "status"),
             ("idx_consultation_apps_created", "consultation_applications", "created_at"),
             ("idx_uploaded_files_category", "uploaded_files", "category"),
             ("idx_uploaded_files_hash", "uploaded_files", "hash"),
-            ("idx_content_key", "content", "key"),
+            ("idx_content_key", "content", "`key`"),
             ("idx_content_active", "content", "is_active"),
             ("idx_faq_order", "faq", "`order`, id")
         ]
@@ -537,7 +593,7 @@ class DatabaseMigrator:
                 INDEX idx_site_settings_key (`key`),
                 INDEX idx_site_settings_category (category),
                 INDEX idx_site_settings_public (is_public)
-            )
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """
 
         return self.execute_sql(sql, description="Created site_settings table")
@@ -562,7 +618,7 @@ class DatabaseMigrator:
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     INDEX idx_email_templates_name (name),
                     INDEX idx_email_templates_active (is_active)
-                )
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             """
             if not self.execute_sql(sql, description="Created email_templates table"):
                 success = False
@@ -584,7 +640,7 @@ class DatabaseMigrator:
                     INDEX idx_email_logs_status (status),
                     INDEX idx_email_logs_template (template_name),
                     INDEX idx_email_logs_created (created_at)
-                )
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             """
             if not self.execute_sql(sql, description="Created email_logs table"):
                 success = False
@@ -608,7 +664,7 @@ class DatabaseMigrator:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE INDEX idx_site_stats_date (date),
                 INDEX idx_site_stats_date_range (date, visits)
-            )
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """
 
         return self.execute_sql(sql, description="Created site_stats table")
@@ -646,6 +702,351 @@ class DatabaseMigrator:
                 logger.warning(f"⚠️  {description} failed: {e}")
 
         return success_count > 0
+
+    # НОВЫЕ МИГРАЦИИ
+
+    def migration_019_create_about_content_table(self) -> bool:
+        """Міграція 019: Створює таблицю about_content для сторінки 'Про нас'."""
+        if self.table_exists('about_content'):
+            return True
+
+        sql = """
+            CREATE TABLE about_content (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                hero_description_uk TEXT,
+                hero_description_en TEXT,
+                mission_uk TEXT,
+                mission_en TEXT,
+                vision_uk TEXT,
+                vision_en TEXT,
+                why_choose_us_uk TEXT,
+                why_choose_us_en TEXT,
+                cta_title_uk VARCHAR(255),
+                cta_title_en VARCHAR(255),
+                cta_description_uk TEXT,
+                cta_description_en TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """
+
+        return self.execute_sql(sql, description="Created about_content table")
+
+    def migration_020_create_team_members_table(self) -> bool:
+        """Міграція 020: Створює таблицю team_members для команди."""
+        if self.table_exists('team_members'):
+            return True
+
+        sql = """
+            CREATE TABLE team_members (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                role_uk VARCHAR(255) NOT NULL,
+                role_en VARCHAR(255) NOT NULL,
+                skills TEXT,
+                avatar VARCHAR(500),
+                initials VARCHAR(3) NOT NULL,
+                order_index INT DEFAULT 0,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+                INDEX idx_team_active (is_active),
+                INDEX idx_team_order (order_index),
+                INDEX idx_team_active_order (is_active, order_index)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """
+
+        return self.execute_sql(sql, description="Created team_members table")
+
+    def migration_021_add_user_password_fields(self) -> bool:
+        """Міграція 021: Додає поля password_changed_at та last_login до users."""
+        if not self.table_exists('users'):
+            return True
+
+        fields = [
+            ('password_changed_at', 'TIMESTAMP NULL'),
+            ('last_login', 'TIMESTAMP NULL')
+        ]
+
+        success_count = 0
+        for field_name, field_type in fields:
+            if not self.column_exists('users', field_name):
+                sql = f"ALTER TABLE users ADD COLUMN {field_name} {field_type}"
+                if self.execute_sql(sql, description=f"Added {field_name} to users"):
+                    success_count += 1
+            else:
+                success_count += 1
+
+        return success_count == len(fields)
+
+    def migration_022_enhance_email_logs_table(self) -> bool:
+        """Міграція 022: Покращує структуру таблиці email_logs."""
+        if not self.table_exists('email_logs'):
+            return True
+
+        fields = [
+            ('ip_address', 'VARCHAR(45)'),
+            ('user_agent', 'TEXT'),
+            ('priority', 'ENUM("low", "normal", "high") DEFAULT "normal"'),
+            ('retry_count', 'INT DEFAULT 0'),
+            ('last_retry_at', 'TIMESTAMP NULL')
+        ]
+
+        success_count = 0
+        for field_name, field_type in fields:
+            if not self.column_exists('email_logs', field_name):
+                sql = f"ALTER TABLE email_logs ADD COLUMN {field_name} {field_type}"
+                if self.execute_sql(sql, description=f"Added {field_name} to email_logs"):
+                    success_count += 1
+            else:
+                success_count += 1
+
+        return success_count == len(fields)
+
+    def migration_023_add_avatar_fields_to_team(self) -> bool:
+        """Міграція 023: Додає поля для аватарок до team_members."""
+        if not self.table_exists('team_members'):
+            return True
+
+        fields = [
+            ('avatar_thumbnail', 'VARCHAR(500)'),
+            ('avatar_original', 'VARCHAR(500)'),
+            ('avatar_color', 'VARCHAR(7) DEFAULT "#007bff"'),
+            ('display_avatar', 'BOOLEAN DEFAULT TRUE')
+        ]
+
+        success_count = 0
+        for field_name, field_type in fields:
+            if not self.column_exists('team_members', field_name):
+                sql = f"ALTER TABLE team_members ADD COLUMN {field_name} {field_type}"
+                if self.execute_sql(sql, description=f"Added {field_name} to team_members"):
+                    success_count += 1
+            else:
+                success_count += 1
+
+        return success_count == len(fields)
+
+    def migration_024_create_admin_activity_log(self) -> bool:
+        """Міграція 024: Створює таблицю для логування дій адміністратора."""
+        if self.table_exists('admin_activity_log'):
+            return True
+
+        sql = """
+            CREATE TABLE admin_activity_log (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                action VARCHAR(100) NOT NULL,
+                resource_type VARCHAR(50) NOT NULL,
+                resource_id INT,
+                details JSON,
+                ip_address VARCHAR(45),
+                user_agent TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+                INDEX idx_admin_activity_user (user_id),
+                INDEX idx_admin_activity_action (action),
+                INDEX idx_admin_activity_resource (resource_type, resource_id),
+                INDEX idx_admin_activity_created (created_at),
+
+                CONSTRAINT fk_admin_activity_user 
+                    FOREIGN KEY (user_id) REFERENCES users (id)
+                    ON DELETE CASCADE ON UPDATE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """
+
+        return self.execute_sql(sql, description="Created admin_activity_log table")
+
+    def migration_025_add_seo_fields_to_about(self) -> bool:
+        """Міграція 025: Додає SEO поля до about_content."""
+        if not self.table_exists('about_content'):
+            return True
+
+        fields = [
+            ('meta_title_uk', 'VARCHAR(255)'),
+            ('meta_title_en', 'VARCHAR(255)'),
+            ('meta_description_uk', 'TEXT'),
+            ('meta_description_en', 'TEXT'),
+            ('og_image', 'VARCHAR(500)')
+        ]
+
+        success_count = 0
+        for field_name, field_type in fields:
+            if not self.column_exists('about_content', field_name):
+                sql = f"ALTER TABLE about_content ADD COLUMN {field_name} {field_type}"
+                if self.execute_sql(sql, description=f"Added {field_name} to about_content"):
+                    success_count += 1
+            else:
+                success_count += 1
+
+        return success_count == len(fields)
+
+    def migration_026_optimize_team_indexes(self) -> bool:
+        """Міграція 026: Оптимізує індекси для таблиці team_members."""
+        if not self.table_exists('team_members'):
+            return True
+
+        indexes = [
+            ("idx_team_name", "team_members", "name"),
+            ("idx_team_skills", "team_members", "skills(100)"),  # Префіксний індекс
+            ("idx_team_created", "team_members", "created_at"),
+            ("idx_team_updated", "team_members", "updated_at")
+        ]
+
+        success_count = 0
+        for index_name, table_name, columns in indexes:
+            if not self.index_exists(table_name, index_name):
+                sql = f"CREATE INDEX {index_name} ON {table_name}({columns})"
+                if self.execute_sql(sql, description=f"Created index {index_name}"):
+                    success_count += 1
+            else:
+                success_count += 1
+
+        return success_count > 0
+
+    def migration_027_add_backup_settings(self) -> bool:
+        """Міграція 027: Додає налаштування для автоматичного резервного копіювання."""
+        if not self.table_exists('site_settings'):
+            return True
+
+        backup_settings = [
+            ('auto_backup_enabled', 'true', 'boolean', 'general', 'Автоматичне створення резервних копій'),
+            ('backup_frequency', 'daily', 'string', 'general', 'Частота створення резервних копій'),
+            ('backup_retention_days', '7', 'integer', 'general', 'Скільки днів зберігати резервні копії'),
+            ('backup_path', '/backups', 'string', 'general', 'Шлях для збереження резервних копій'),
+            ('last_backup_at', '', 'datetime', 'general', 'Час останньої резервної копії')
+        ]
+
+        for key, value, type_val, category, description in backup_settings:
+            sql = """
+                INSERT IGNORE INTO site_settings (`key`, value, type, category, description) 
+                VALUES (:key, :value, :type, :category, :description)
+            """
+            self.execute_sql(sql, {
+                'key': key,
+                'value': value,
+                'type': type_val,
+                'category': category,
+                'description': description
+            }, f"Added backup setting: {key}")
+
+        return True
+
+    def migration_028_enhance_security_logging(self) -> bool:
+        """Міграція 028: Покращує систему безпеки та логування."""
+        if self.table_exists('security_events'):
+            return True
+
+        sql = """
+            CREATE TABLE security_events (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                event_type VARCHAR(50) NOT NULL,
+                severity ENUM('low', 'medium', 'high', 'critical') DEFAULT 'medium',
+                user_id INT,
+                ip_address VARCHAR(45) NOT NULL,
+                user_agent TEXT,
+                details JSON,
+                resolved BOOLEAN DEFAULT FALSE,
+                resolved_at TIMESTAMP NULL,
+                resolved_by INT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+                INDEX idx_security_events_type (event_type),
+                INDEX idx_security_events_severity (severity),
+                INDEX idx_security_events_user (user_id),
+                INDEX idx_security_events_ip (ip_address),
+                INDEX idx_security_events_created (created_at),
+                INDEX idx_security_events_unresolved (resolved, created_at),
+
+                CONSTRAINT fk_security_events_user 
+                    FOREIGN KEY (user_id) REFERENCES users (id)
+                    ON DELETE SET NULL ON UPDATE CASCADE,
+                CONSTRAINT fk_security_events_resolver
+                    FOREIGN KEY (resolved_by) REFERENCES users (id)
+                    ON DELETE SET NULL ON UPDATE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """
+
+        return self.execute_sql(sql, description="Created security_events table")
+
+    def migration_029_create_file_categories_table(self) -> bool:
+        """Міграція 029: Створює таблицю для категорій файлів."""
+        if self.table_exists('file_categories'):
+            return True
+
+        sql = """
+            CREATE TABLE file_categories (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(100) NOT NULL UNIQUE,
+                slug VARCHAR(100) NOT NULL UNIQUE,
+                description TEXT,
+                allowed_extensions JSON,
+                max_file_size BIGINT,
+                icon VARCHAR(100),
+                color VARCHAR(7) DEFAULT '#007bff',
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+                INDEX idx_file_categories_active (is_active),
+                INDEX idx_file_categories_slug (slug)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """
+
+        success = self.execute_sql(sql, description="Created file_categories table")
+
+        if success:
+            # Додаємо стандартні категорії
+            default_categories = [
+                ('Images', 'images', 'Image files', '["jpg", "jpeg", "png", "gif", "webp", "svg"]', 10485760, 'image',
+                 '#28a745'),
+                ('Documents', 'documents', 'Document files', '["pdf", "doc", "docx", "txt", "rtf"]', 52428800,
+                 'file-text', '#17a2b8'),
+                ('Media', 'media', 'Video and audio files', '["mp4", "avi", "mov", "mp3", "wav"]', 104857600,
+                 'play-circle', '#6f42c1'),
+                ('Other', 'other', 'Other file types', '[]', 10485760, 'file', '#6c757d')
+            ]
+
+            for name, slug, desc, exts, size, icon, color in default_categories:
+                sql = """
+                    INSERT IGNORE INTO file_categories 
+                    (name, slug, description, allowed_extensions, max_file_size, icon, color) 
+                    VALUES (:name, :slug, :description, :extensions, :size, :icon, :color)
+                """
+                self.execute_sql(sql, {
+                    'name': name, 'slug': slug, 'description': desc,
+                    'extensions': exts, 'size': size, 'icon': icon, 'color': color
+                }, f"Added file category: {name}")
+
+        return success
+
+    def migration_030_add_multilingual_support(self) -> bool:
+        """Міграція 030: Додає покращену підтримку багатомовності."""
+        if not self.table_exists('site_settings'):
+            return True
+
+        # Додаємо налаштування мови
+        language_settings = [
+            ('default_language', 'uk', 'string', 'general', 'Мова за замовчуванням'),
+            ('supported_languages', '["uk", "en"]', 'json', 'general', 'Підтримувані мови'),
+            ('auto_detect_language', 'true', 'boolean', 'general', 'Автовизначення мови'),
+            ('fallback_language', 'uk', 'string', 'general', 'Запасна мова')
+        ]
+
+        for key, value, type_val, category, description in language_settings:
+            sql = """
+                INSERT IGNORE INTO site_settings (`key`, value, type, category, description) 
+                VALUES (:key, :value, :type, :category, :description)
+            """
+            self.execute_sql(sql, {
+                'key': key,
+                'value': value,
+                'type': type_val,
+                'category': category,
+                'description': description
+            }, f"Added language setting: {key}")
+
+        return True
 
     def run_migration(self, migration: Migration) -> bool:
         """Виконує одну міграцію."""
@@ -777,9 +1178,94 @@ class DatabaseMigrator:
 
     def rollback_migration(self, version: str) -> bool:
         """Відкочує міграцію (якщо можливо)."""
-        logger.warning("⚠️  Migration rollback is not implemented yet")
+        logger.warning("⚠️ Migration rollback is not fully implemented yet")
         logger.info("💡 For now, you need to manually revert database changes")
+
+        # TODO: Implement rollback logic
+        # 1. Get rollback SQL from migration record
+        # 2. Execute rollback SQL
+        # 3. Remove migration from schema_migrations table
+
         return False
+
+    def create_migration_snapshot(self) -> Dict[str, Any]:
+        """Створює снапшот поточного стану міграцій."""
+        try:
+            with self.engine.connect() as connection:
+                result = connection.execute(text("""
+                    SELECT version, name, description, executed_at, success 
+                    FROM schema_migrations 
+                    ORDER BY executed_at
+                """))
+
+                migrations = []
+                for row in result:
+                    migrations.append({
+                        "version": row[0],
+                        "name": row[1],
+                        "description": row[2],
+                        "executed_at": row[3].isoformat() if row[3] else None,
+                        "success": bool(row[4])
+                    })
+
+                snapshot = {
+                    "timestamp": datetime.now().isoformat(),
+                    "total_migrations": len(migrations),
+                    "successful_migrations": sum(1 for m in migrations if m["success"]),
+                    "migrations": migrations
+                }
+
+                return snapshot
+
+        except Exception as e:
+            logger.error(f"Failed to create migration snapshot: {e}")
+            return {"error": str(e)}
+
+    def validate_database_integrity(self) -> Dict[str, Any]:
+        """Перевіряє цілісність бази даних."""
+        try:
+            results = {"checks": [], "errors": [], "warnings": []}
+
+            # Перевірка таблиць
+            required_tables = [
+                'users', 'designs', 'design_categories', 'packages', 'reviews',
+                'faq', 'quote_applications', 'consultation_applications',
+                'about_content', 'team_members', 'email_logs', 'site_settings'
+            ]
+
+            for table in required_tables:
+                if self.table_exists(table):
+                    results["checks"].append(f"✅ Table {table} exists")
+                else:
+                    results["errors"].append(f"❌ Table {table} is missing")
+
+            # Перевірка індексів
+            critical_indexes = [
+                ('users', 'email'),
+                ('designs', 'slug'),
+                ('team_members', 'idx_team_active_order')
+            ]
+
+            for table, index in critical_indexes:
+                if self.table_exists(table):
+                    if self.index_exists(table, index):
+                        results["checks"].append(f"✅ Index {index} on {table} exists")
+                    else:
+                        results["warnings"].append(f"⚠️ Index {index} on {table} is missing")
+
+            # Підсумок
+            results["summary"] = {
+                "total_checks": len(results["checks"]),
+                "total_errors": len(results["errors"]),
+                "total_warnings": len(results["warnings"]),
+                "status": "healthy" if len(results["errors"]) == 0 else "unhealthy"
+            }
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Failed to validate database integrity: {e}")
+            return {"error": str(e)}
 
 
 def main():
@@ -790,6 +1276,8 @@ def main():
     parser.add_argument("--target", help="Target migration version")
     parser.add_argument("--rollback", help="Rollback to specific version")
     parser.add_argument("--force", action="store_true", help="Force execution even if risky")
+    parser.add_argument("--snapshot", action="store_true", help="Create migration snapshot")
+    parser.add_argument("--validate", action="store_true", help="Validate database integrity")
 
     args = parser.parse_args()
 
@@ -811,6 +1299,38 @@ def main():
                 for migration in status["migrations"]:
                     status_icon = "✅" if migration["executed"] else "⏳"
                     print(f"   {status_icon} {migration['version']}: {migration['name']}")
+
+                return
+
+            elif args.snapshot:
+                # Створюємо снапшот міграцій
+                snapshot = migrator.create_migration_snapshot()
+                snapshot_file = f"migration_snapshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+
+                with open(snapshot_file, 'w', encoding='utf-8') as f:
+                    json.dump(snapshot, f, indent=2, ensure_ascii=False)
+
+                print(f"📸 Migration snapshot saved to: {snapshot_file}")
+                return
+
+            elif args.validate:
+                # Перевіряємо цілісність БД
+                validation = migrator.validate_database_integrity()
+
+                print("🔍 Database Integrity Validation:")
+                print(f"Status: {validation.get('summary', {}).get('status', 'unknown')}")
+                print(f"Checks: {len(validation.get('checks', []))}")
+                print(f"Errors: {len(validation.get('errors', []))}")
+                print(f"Warnings: {len(validation.get('warnings', []))}")
+
+                for check in validation.get('checks', [])[:10]:  # Show first 10
+                    print(f"   {check}")
+
+                for error in validation.get('errors', []):
+                    print(f"   {error}")
+
+                for warning in validation.get('warnings', []):
+                    print(f"   {warning}")
 
                 return
 

@@ -137,6 +137,10 @@ async def login(user_data: schemas.UserLogin, response: Response, db: Session = 
             detail="Account is deactivated"
         )
 
+    # Обновляем время последнего входа
+    user.last_login = func.now()
+    db.commit()
+
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": user.email}, expires_delta=access_token_expires
@@ -190,7 +194,58 @@ async def update_current_user_profile(
     return current_user
 
 
-# ============ ДИЗАЙНИ ============
+# НОВАЯ ФУНКЦИЯ: Смена пароля
+@router.post("/auth/change-password", response_model=schemas.PasswordChangeResponse)
+async def change_password(
+        password_data: schemas.PasswordChangeRequest,
+        request: Request,
+        db: Session = Depends(get_db)
+):
+    """Сменить пароль текущего пользователя."""
+    current_user = get_current_active_user(get_current_user(request, None, db))
+
+    try:
+        # Проверяем текущий пароль
+        if not verify_password(password_data.current_password, current_user.hashed_password):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Current password is incorrect"
+            )
+
+        # Проверяем что новый пароль отличается от текущего
+        if verify_password(password_data.new_password, current_user.hashed_password):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="New password must be different from current password"
+            )
+
+        # Обновляем пароль
+        current_user.hashed_password = get_password_hash(password_data.new_password)
+        current_user.password_changed_at = func.now()
+        current_user.updated_at = func.now()
+
+        db.commit()
+        db.refresh(current_user)
+
+        logger.info(f"Password changed for user: {current_user.email}")
+
+        return schemas.PasswordChangeResponse(
+            message="Password changed successfully",
+            changed_at=current_user.password_changed_at
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error changing password for {current_user.email}: {e}")
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to change password"
+        )
+
+
+# ============ ДИЗАЙНЫ ============
 
 @router.get("/designs", response_model=List[schemas.DesignWithCategory])
 async def get_designs(
@@ -234,7 +289,7 @@ async def get_designs(
 
         designs = query.offset(skip).limit(limit).all()
 
-        # Оновлюємо лічильник переглядів для кожного дизайну
+        # Оновлюємо лічільник переглядів для кожного дизайну
         for design in designs:
             design.views_count += 1
         db.commit()
@@ -481,6 +536,297 @@ async def delete_design_category(
     return {"message": "Category deleted successfully"}
 
 
+# ============ НОВЫЕ ФУНКЦИИ: УПРАВЛЕНИЕ СТРАНИЦЕЙ "О НАС" ============
+
+@router.get("/content/about", response_model=schemas.AboutPageResponse)
+async def get_about_content(db: Session = Depends(get_db)):
+    """Получить контент страницы 'О нас' с командой."""
+    try:
+        # Получаем контент страницы
+        about_content = db.query(models.AboutContent).first()
+
+        # Если нет контента, создаем пустую запись
+        if not about_content:
+            about_content = models.AboutContent()
+            db.add(about_content)
+            db.commit()
+            db.refresh(about_content)
+
+        # Получаем активных членов команды
+        team_members = db.query(models.TeamMember).filter(
+            models.TeamMember.is_active == True
+        ).order_by(
+            models.TeamMember.order_index,
+            models.TeamMember.id
+        ).all()
+
+        # Формируем ответ
+        response_data = about_content.__dict__.copy()
+        response_data['team'] = team_members
+
+        return schemas.AboutPageResponse(**response_data)
+
+    except Exception as e:
+        logger.error(f"Error fetching about content: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch about content")
+
+
+@router.put("/content/about", response_model=schemas.AboutContent)
+async def update_about_content(
+        content_data: schemas.AboutContentUpdate,
+        request: Request,
+        db: Session = Depends(get_db)
+):
+    """Обновить контент страницы 'О нас' (только админ)."""
+    current_user = get_current_admin_user(get_current_user(request, None, db))
+
+    try:
+        # Получаем существующий контент или создаем новый
+        about_content = db.query(models.AboutContent).first()
+
+        if not about_content:
+            # Создаем новый контент
+            about_content = models.AboutContent(**content_data.dict(exclude_unset=True))
+            db.add(about_content)
+            logger.info(f"About content created by {current_user.email}")
+        else:
+            # Обновляем существующий
+            update_data = content_data.dict(exclude_unset=True)
+            for field, value in update_data.items():
+                setattr(about_content, field, value)
+            about_content.updated_at = func.now()
+            logger.info(f"About content updated by {current_user.email}")
+
+        db.commit()
+        db.refresh(about_content)
+
+        return about_content
+
+    except Exception as e:
+        logger.error(f"Error updating about content: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to update about content")
+
+
+# ============ НОВЫЕ ФУНКЦИИ: УПРАВЛЕНИЕ КОМАНДОЙ ============
+
+@router.get("/team", response_model=List[schemas.TeamMember])
+async def get_team_members(
+        include_inactive: bool = False,
+        db: Session = Depends(get_db)
+):
+    """Получить список членов команды."""
+    try:
+        query = db.query(models.TeamMember)
+
+        if not include_inactive:
+            query = query.filter(models.TeamMember.is_active == True)
+
+        team_members = query.order_by(
+            models.TeamMember.order_index,
+            models.TeamMember.id
+        ).all()
+
+        return team_members
+
+    except Exception as e:
+        logger.error(f"Error fetching team members: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch team members")
+
+
+@router.post("/team", response_model=schemas.TeamMember)
+async def create_team_member(
+        member_data: schemas.TeamMemberCreate,
+        request: Request,
+        db: Session = Depends(get_db)
+):
+    """Добавить нового члена команды (только админ)."""
+    current_user = get_current_admin_user(get_current_user(request, None, db))
+
+    try:
+        # Проверяем уникальность имени
+        existing_member = db.query(models.TeamMember).filter(
+            models.TeamMember.name == member_data.name,
+            models.TeamMember.is_active == True
+        ).first()
+
+        if existing_member:
+            raise HTTPException(
+                status_code=400,
+                detail="Team member with this name already exists"
+            )
+
+        # Если order_index не указан, ставим в конец
+        if member_data.order_index == 0:
+            max_order = db.query(func.max(models.TeamMember.order_index)).scalar() or 0
+            member_data.order_index = max_order + 1
+
+        team_member = models.TeamMember(**member_data.dict())
+        db.add(team_member)
+        db.commit()
+        db.refresh(team_member)
+
+        logger.info(f"Team member created: {team_member.name} by {current_user.email}")
+        return team_member
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating team member: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to create team member")
+
+
+@router.put("/team/{member_id}", response_model=schemas.TeamMember)
+async def update_team_member(
+        member_id: int,
+        member_data: schemas.TeamMemberUpdate,
+        request: Request,
+        db: Session = Depends(get_db)
+):
+    """Обновить члена команды (только админ)."""
+    current_user = get_current_admin_user(get_current_user(request, None, db))
+
+    try:
+        team_member = db.query(models.TeamMember).filter(
+            models.TeamMember.id == member_id
+        ).first()
+
+        if not team_member:
+            raise HTTPException(status_code=404, detail="Team member not found")
+
+        # Проверяем уникальность имени (если меняется)
+        if member_data.name and member_data.name != team_member.name:
+            existing_member = db.query(models.TeamMember).filter(
+                models.TeamMember.name == member_data.name,
+                models.TeamMember.is_active == True,
+                models.TeamMember.id != member_id
+            ).first()
+
+            if existing_member:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Team member with this name already exists"
+                )
+
+        # Обновляем поля
+        update_data = member_data.dict(exclude_unset=True)
+        for field, value in update_data.items():
+            setattr(team_member, field, value)
+
+        team_member.updated_at = func.now()
+        db.commit()
+        db.refresh(team_member)
+
+        logger.info(f"Team member updated: {team_member.name} by {current_user.email}")
+        return team_member
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating team member: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to update team member")
+
+
+@router.delete("/team/{member_id}", response_model=schemas.Message)
+async def delete_team_member(
+        member_id: int,
+        request: Request,
+        db: Session = Depends(get_db)
+):
+    """Удалить члена команды (только админ)."""
+    current_user = get_current_admin_user(get_current_user(request, None, db))
+
+    try:
+        team_member = db.query(models.TeamMember).filter(
+            models.TeamMember.id == member_id
+        ).first()
+
+        if not team_member:
+            raise HTTPException(status_code=404, detail="Team member not found")
+
+        member_name = team_member.name
+        db.delete(team_member)
+        db.commit()
+
+        logger.info(f"Team member deleted: {member_name} by {current_user.email}")
+        return {"message": "Team member deleted successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting team member: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to delete team member")
+
+
+@router.patch("/team/{member_id}/toggle-active", response_model=schemas.TeamMember)
+async def toggle_team_member_active(
+        member_id: int,
+        request: Request,
+        db: Session = Depends(get_db)
+):
+    """Переключить активность члена команды (только админ)."""
+    current_user = get_current_admin_user(get_current_user(request, None, db))
+
+    try:
+        team_member = db.query(models.TeamMember).filter(
+            models.TeamMember.id == member_id
+        ).first()
+
+        if not team_member:
+            raise HTTPException(status_code=404, detail="Team member not found")
+
+        team_member.is_active = not team_member.is_active
+        team_member.updated_at = func.now()
+        db.commit()
+        db.refresh(team_member)
+
+        status = "activated" if team_member.is_active else "deactivated"
+        logger.info(f"Team member {status}: {team_member.name} by {current_user.email}")
+
+        return team_member
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error toggling team member status: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to update team member status")
+
+
+@router.patch("/team/reorder", response_model=schemas.Message)
+async def reorder_team_members(
+        member_ids: List[int],
+        request: Request,
+        db: Session = Depends(get_db)
+):
+    """Изменить порядок членов команды (только админ)."""
+    current_user = get_current_admin_user(get_current_user(request, None, db))
+
+    try:
+        # Обновляем order_index для каждого члена команды
+        for index, member_id in enumerate(member_ids):
+            team_member = db.query(models.TeamMember).filter(
+                models.TeamMember.id == member_id
+            ).first()
+
+            if team_member:
+                team_member.order_index = index
+                team_member.updated_at = func.now()
+
+        db.commit()
+
+        logger.info(f"Team members reordered by {current_user.email}")
+        return {"message": "Team members reordered successfully"}
+
+    except Exception as e:
+        logger.error(f"Error reordering team members: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to reorder team members")
+
+
 # ============ ПАКЕТИ ============
 
 @router.get("/packages", response_model=List[schemas.Package])
@@ -611,11 +957,11 @@ async def delete_package(
     return {"message": "Package deleted successfully"}
 
 
-# ============ ВІДГУКИ ============
+# ============ ВІДГУКИ (ИСПРАВЛЕНО) ============
 
 @router.get("/reviews", response_model=List[schemas.Review])
 async def get_reviews(
-        approved_only: bool = True,
+        approved_only: bool = False,  # ИЗМЕНЕНО: по умолчанию False, чтобы показывать все отзывы
         featured_only: bool = False,
         skip: int = Query(0, ge=0),
         limit: int = Query(50, ge=1, le=100),
@@ -626,6 +972,31 @@ async def get_reviews(
 
     if approved_only:
         query = query.filter(models.Review.is_approved == True)
+
+    if featured_only:
+        query = query.filter(models.Review.is_featured == True)
+
+    reviews = query.order_by(
+        desc(models.Review.is_featured),
+        models.Review.sort_order,
+        desc(models.Review.created_at)
+    ).offset(skip).limit(limit).all()
+
+    return reviews
+
+
+# НОВЫЙ РОУТ: Получить только одобренные отзывы для публичного просмотра
+@router.get("/reviews/public", response_model=List[schemas.Review])
+async def get_public_reviews(
+        featured_only: bool = False,
+        skip: int = Query(0, ge=0),
+        limit: int = Query(20, ge=1, le=100),
+        db: Session = Depends(get_db)
+):
+    """Отримати публічні відгуки (тільки схвалені) для головної сторінки."""
+    query = db.query(models.Review).options(joinedload(models.Review.user)).filter(
+        models.Review.is_approved == True  # Только одобренные отзывы
+    )
 
     if featured_only:
         query = query.filter(models.Review.is_featured == True)
@@ -675,7 +1046,15 @@ async def create_review(
             detail="You have already submitted a review"
         )
 
-    review = models.Review(**review_data.dict(), user_id=current_user.id)
+    # ИСПРАВЛЕНО: Автоматически одобряем отзывы от зарегистрированных пользователей
+    review = models.Review(
+        **review_data.dict(),
+        user_id=current_user.id,
+        is_approved=True,  # Автоматически одобряем
+        approved_at=func.now(),  # Устанавливаем время одобрения
+        approved_by_id=current_user.id  # Одобрено самим пользователем
+    )
+
     db.add(review)
     db.commit()
     db.refresh(review)
@@ -685,7 +1064,7 @@ async def create_review(
         models.Review.id == review.id
     ).first()
 
-    logger.info(f"Review created by {current_user.email}")
+    logger.info(f"Review created and auto-approved by {current_user.email}")
     return review
 
 
@@ -707,12 +1086,15 @@ async def create_anonymous_review(
             )
 
         review_dict = review_data.dict()
+        # ИСПРАВЛЕНО: Анонимные отзывы требуют модерации
+        review_dict['is_approved'] = False  # Анонимные отзывы требуют одобрения
+
         review = models.Review(**review_dict)
         db.add(review)
         db.commit()
         db.refresh(review)
 
-        logger.info(f"Anonymous review created from {review_data.author_email}")
+        logger.info(f"Anonymous review created from {review_data.author_email} (requires moderation)")
         return review
     except Exception as e:
         logger.error(f"Error creating anonymous review: {e}")
@@ -899,7 +1281,7 @@ async def delete_faq(
     return {"message": "FAQ deleted successfully"}
 
 
-# ============ ЗАЯВКИ ============
+# ============ ЗАЯВКИ (ИСПРАВЛЕНО) ============
 
 @router.post("/applications/quote", response_model=schemas.QuoteApplication)
 async def create_quote_application(
@@ -909,35 +1291,46 @@ async def create_quote_application(
 ):
     """Створити заявку на прорахунок."""
     try:
-        # Якщо вказано package_id, перевіряємо його та отримуємо назву
         package = None
+
+        # ИСПРАВЛЕНО: Улучшена проверка пакета
         if application_data.package_id:
             package = db.query(models.Package).filter(
-                models.Package.id == application_data.package_id,
-                models.Package.is_active == True
+                models.Package.id == application_data.package_id
             ).first()
+
             if not package:
-                raise HTTPException(status_code=400, detail="Package not found")
+                logger.warning(f"Package not found: {application_data.package_id}")
+                # ИСПРАВЛЕНО: Более мягкая обработка ошибки - создаем заявку без пакета
+                application_data.package_id = None
+                logger.info(f"Creating quote application without package for {application_data.email}")
+            elif not package.is_active:
+                logger.warning(f"Package is inactive: {application_data.package_id}")
+                # ИСПРАВЛЕНО: Если пакет неактивен, создаем заявку без пакета
+                application_data.package_id = None
+                logger.info(f"Creating quote application without inactive package for {application_data.email}")
 
         application = models.QuoteApplication(**application_data.dict())
         db.add(application)
         db.commit()
         db.refresh(application)
 
-        # Завантажуємо пакет для відповіді
-        if package:
+        # Завантажуємо пакет для відповіді, якщо він есть
+        if application.package_id:
             application = db.query(models.QuoteApplication).options(
                 joinedload(models.QuoteApplication.package)
             ).filter(models.QuoteApplication.id == application.id).first()
 
-        logger.info(f"Quote application created: {application.email}")
+        logger.info(f"Quote application created: {application.email} with package_id: {application.package_id}")
 
         # TODO: Додати відправку email в background task
         # background_tasks.add_task(send_quote_application_notification, application)
 
         return application
+
     except Exception as e:
         logger.error(f"Error creating quote application: {e}")
+        db.rollback()
         raise HTTPException(status_code=500, detail="Failed to create application")
 
 
@@ -1796,8 +2189,8 @@ async def get_public_config(db: Session = Depends(get_db)):
 
         # Додаємо публічні налаштування з БД
         try:
-            public_settings = db.query(models.Settings).filter(
-                models.Settings.is_public == True
+            public_settings = db.query(models.SiteSettings).filter(
+                models.SiteSettings.is_public == True
             ).all()
 
             settings_dict = {}

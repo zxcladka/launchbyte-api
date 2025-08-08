@@ -7,7 +7,7 @@ import unicodedata
 import mimetypes
 import time
 from pathlib import Path
-from typing import Dict, Optional, List, Union, Any
+from typing import Dict, Optional, List, Union, Any, Tuple
 from datetime import datetime, timedelta
 from fastapi import UploadFile, HTTPException
 from PIL import Image, ImageOps, ImageDraw, ImageFont
@@ -322,6 +322,63 @@ def create_thumbnail(image_path: str, size: tuple = (300, 300)) -> Optional[str]
         return None
 
 
+def create_avatar_thumbnail(image_path: str, size: tuple = (150, 150)) -> Optional[str]:
+    """Створює кругову аватарку для члена команди."""
+    try:
+        with Image.open(image_path) as img:
+            # Автоматично повертаємо зображення
+            img = ImageOps.exif_transpose(img)
+
+            # Конвертуємо в RGB
+            if img.mode in ('RGBA', 'LA', 'P'):
+                background = Image.new('RGB', img.size, (255, 255, 255))
+                if img.mode == 'P':
+                    img = img.convert('RGBA')
+                if img.mode in ('RGBA', 'LA'):
+                    background.paste(img, mask=img.split()[-1])
+                else:
+                    background.paste(img)
+                img = background
+
+            # Обрізаємо до квадрату
+            width, height = img.size
+            size_min = min(width, height)
+
+            left = (width - size_min) // 2
+            top = (height - size_min) // 2
+            right = left + size_min
+            bottom = top + size_min
+
+            img = img.crop((left, top, right, bottom))
+
+            # Змінюємо розмір
+            img = img.resize(size, Image.Resampling.LANCZOS)
+
+            # Створюємо кругову маску
+            mask = Image.new('L', size, 0)
+            draw = ImageDraw.Draw(mask)
+            draw.ellipse((0, 0) + size, fill=255)
+
+            # Застосовуємо маску
+            output = ImageOps.fit(img, mask.size, centering=(0.5, 0.5))
+            output.putalpha(mask)
+
+            # Зберігаємо як PNG з прозорістю
+            avatar_dir = Path(image_path).parent / 'avatars'
+            ensure_dir_exists(str(avatar_dir))
+
+            avatar_filename = Path(image_path).stem + '_avatar.png'
+            avatar_path = avatar_dir / avatar_filename
+
+            output.save(avatar_path, 'PNG', optimize=True)
+            logger.info(f"Avatar thumbnail created: {avatar_path}")
+            return str(avatar_path)
+
+    except Exception as e:
+        logger.error(f"Failed to create avatar for {image_path}: {e}")
+        return None
+
+
 def optimize_image(image_path: str, quality: int = 85, max_width: int = 1920) -> Optional[Dict[str, Any]]:
     """Оптимізує зображення за розміром та якістю."""
     try:
@@ -423,6 +480,59 @@ def create_image_placeholder(width: int, height: int, text: str = "", bg_color: 
         return b''
 
 
+def generate_initials_avatar(name: str, size: tuple = (150, 150), bg_color: str = "#007bff") -> bytes:
+    """Генерує аватарку з ініціалами для члена команди."""
+    try:
+        # Отримуємо ініціали
+        initials = get_initials_from_name(name)
+
+        # Створюємо зображення
+        img = Image.new('RGB', size, color=bg_color)
+        draw = ImageDraw.Draw(img)
+
+        # Намагаємось завантажити кращий шрифт
+        try:
+            # Розмір шрифту залежно від розміру аватарки
+            font_size = min(size) // 3
+            font = ImageFont.truetype("arial.ttf", font_size)
+        except:
+            try:
+                font_size = min(size) // 4
+                font = ImageFont.load_default()
+            except:
+                font = None
+
+        if font:
+            # Розраховуємо позицію тексту
+            bbox = draw.textbbox((0, 0), initials, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+
+            x = (size[0] - text_width) // 2
+            y = (size[1] - text_height) // 2
+
+            draw.text((x, y), initials, fill="white", font=font)
+
+        # Робимо круглою
+        mask = Image.new('L', size, 0)
+        mask_draw = ImageDraw.Draw(mask)
+        mask_draw.ellipse((0, 0) + size, fill=255)
+
+        # Застосовуємо маску
+        output = Image.new('RGBA', size, (0, 0, 0, 0))
+        output.paste(img, (0, 0))
+        output.putalpha(mask)
+
+        # Конвертуємо в bytes
+        img_bytes = io.BytesIO()
+        output.save(img_bytes, format='PNG')
+        return img_bytes.getvalue()
+
+    except Exception as e:
+        logger.error(f"Failed to generate initials avatar: {e}")
+        return create_image_placeholder(size[0], size[1], get_initials_from_name(name))
+
+
 # ============ ТЕКСТОВІ УТИЛІТИ ============
 
 def slugify(text: str) -> str:
@@ -460,6 +570,24 @@ def slugify(text: str) -> str:
         text = text[:50].rstrip('-')
 
     return text or "item"
+
+
+def get_initials_from_name(full_name: str) -> str:
+    """Отримує ініціали з повного імені."""
+    if not full_name or not full_name.strip():
+        return "?"
+
+    words = full_name.strip().split()
+    initials = ""
+
+    for word in words[:2]:  # Беремо максимум 2 слова
+        if word and word[0].isalpha():
+            initials += word[0].upper()
+
+    if not initials:
+        initials = full_name[0].upper() if full_name else "?"
+
+    return initials
 
 
 def sanitize_filename(filename: str) -> str:
@@ -515,7 +643,7 @@ def sanitize_html(content: str, allowed_tags: Optional[List[str]] = None) -> str
 
 
 def extract_text_from_html(html_content: str) -> str:
-    """Витягає чистий текст з HTML."""
+    """Витягує чистий текст з HTML."""
     if not html_content:
         return ""
 
@@ -590,6 +718,22 @@ def normalize_phone(phone: str) -> str:
     return clean_phone
 
 
+def normalize_telegram(telegram: str) -> str:
+    """Нормалізує Telegram username."""
+    telegram = telegram.strip()
+
+    # Якщо це посилання, витягуємо username
+    if 'telegram.me/' in telegram or 't.me/' in telegram:
+        username = telegram.split('/')[-1]
+        return f"@{username}" if not username.startswith('@') else username
+
+    # Додаємо @ якщо немає
+    if not telegram.startswith('@') and telegram:
+        return f"@{telegram}"
+
+    return telegram
+
+
 def generate_excerpt(text: str, max_length: int = 160) -> str:
     """Генерує анонс з тексту."""
     if not text:
@@ -626,6 +770,29 @@ def join_features_list(features_list: List[str]) -> str:
     # Очищуємо від зайвих пробілів та об'єднуємо
     clean_features = [str(feature).strip() for feature in features_list if str(feature).strip()]
     return ', '.join(clean_features)
+
+
+def parse_skills_string(skills_string: str) -> List[str]:
+    """Парсить рядок навичок члена команди."""
+    if not skills_string or not skills_string.strip():
+        return []
+
+    # Розділяємо за комами або крапкою з комою
+    skills = re.split(r'[,;]', skills_string)
+
+    # Очищуємо від зайвих пробілів
+    skills = [skill.strip() for skill in skills if skill.strip()]
+
+    return skills
+
+
+def format_skills_list(skills_list: List[str]) -> str:
+    """Форматує список навичок в рядок."""
+    if not skills_list:
+        return ""
+
+    clean_skills = [str(skill).strip() for skill in skills_list if str(skill).strip()]
+    return ', '.join(clean_skills)
 
 
 def get_file_size_human(size_bytes: int) -> str:
@@ -666,6 +833,26 @@ def format_datetime(dt: datetime, format_string: str = "%Y-%m-%d %H:%M:%S") -> s
     except Exception as e:
         logger.error(f"Failed to format datetime: {e}")
         return str(dt)
+
+
+def format_datetime_ukrainian(dt: datetime) -> str:
+    """Форматує дату в українському форматі."""
+    if not dt:
+        return ""
+
+    months_ukrainian = [
+        "січня", "лютого", "березня", "квітня", "травня", "червня",
+        "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"
+    ]
+
+    try:
+        day = dt.day
+        month = months_ukrainian[dt.month - 1]
+        year = dt.year
+        return f"{day} {month} {year} р."
+    except Exception as e:
+        logger.error(f"Failed to format Ukrainian datetime: {e}")
+        return format_datetime(dt)
 
 
 def get_time_ago(dt: datetime) -> str:
@@ -753,6 +940,39 @@ def generate_safe_redirect_url(base_url: str, path: str) -> str:
         return urljoin(base_url, path)
     except Exception:
         return base_url
+
+
+# ============ ВАЛІДАЦІЯ КОМАНДИ ============
+
+def validate_team_member_data(member_data: Dict[str, Any]) -> Dict[str, List[str]]:
+    """Валідує дані члена команди."""
+    errors = {}
+
+    # Ім'я
+    if not member_data.get('name', '').strip():
+        errors.setdefault('name', []).append("Ім'я є обов'язковим")
+    elif len(member_data['name'].strip()) < 2:
+        errors.setdefault('name', []).append("Ім'я повинно містити мінімум 2 символи")
+
+    # Роль українською
+    if not member_data.get('role_uk', '').strip():
+        errors.setdefault('role_uk', []).append("Роль українською є обов'язковою")
+
+    # Роль англійською
+    if not member_data.get('role_en', '').strip():
+        errors.setdefault('role_en', []).append("Роль англійською є обов'язковою")
+
+    # Ініціали
+    initials = member_data.get('initials', '').strip()
+    if not initials:
+        # Автоматично генеруємо ініціали з імені
+        if member_data.get('name'):
+            member_data['initials'] = get_initials_from_name(member_data['name'])
+    else:
+        if len(initials) > 3:
+            errors.setdefault('initials', []).append("Ініціали не повинні перевищувати 3 символи")
+
+    return errors
 
 
 # ============ СТАТИСТИКА ТА АНАЛІТИКА ============
@@ -879,9 +1099,56 @@ def calculate_storage_usage() -> Dict[str, Any]:
             "available_space": available_space,
             "available_space_human": get_file_size_human(available_space),
             "usage_percentage": (total_size / (total_size + available_space)) * 100 if (
-                                                                                                   total_size + available_space) > 0 else 0
+                                                                                               total_size + available_space) > 0 else 0
         }
 
     except Exception as e:
         logger.error(f"Failed to calculate storage usage: {e}")
         return {"error": str(e)}
+
+
+# ============ ЦВЕТОВІ УТИЛІТИ ДЛЯ АВАТАРІВ ============
+
+def generate_avatar_color(name: str) -> str:
+    """Генерує консистентний колір для аватарки на основі імені."""
+    colors = [
+        "#007bff", "#6610f2", "#6f42c1", "#e83e8c", "#dc3545",
+        "#fd7e14", "#ffc107", "#28a745", "#20c997", "#17a2b8",
+        "#6c757d", "#343a40", "#495057", "#f8f9fa", "#e9ecef"
+    ]
+
+    # Використовуємо хеш імені для визначення кольору
+    hash_value = hash(name.lower().strip())
+    color_index = abs(hash_value) % len(colors)
+
+    return colors[color_index]
+
+
+# ============ BACKUP УТИЛІТИ ============
+
+def create_data_backup(data: Dict[str, Any], backup_type: str = "manual") -> Optional[str]:
+    """Створює резервну копію даних."""
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_filename = f"backup_{backup_type}_{timestamp}.json"
+        backup_dir = Path(settings.UPLOAD_DIR).parent / "backups"
+
+        ensure_dir_exists(str(backup_dir))
+        backup_path = backup_dir / backup_filename
+
+        backup_data = {
+            "timestamp": timestamp,
+            "type": backup_type,
+            "version": "1.0",
+            "data": data
+        }
+
+        with open(backup_path, 'w', encoding='utf-8') as f:
+            json.dump(backup_data, f, ensure_ascii=False, indent=2, default=str)
+
+        logger.info(f"Data backup created: {backup_path}")
+        return str(backup_path)
+
+    except Exception as e:
+        logger.error(f"Failed to create data backup: {e}")
+        return None

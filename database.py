@@ -329,7 +329,89 @@ def run_migrations():
 
     try:
         with engine.connect() as connection:
-            # Міграція 1: Додаємо show_live_demo до designs
+            # НОВЫЕ МИГРАЦИИ ДЛЯ ДОБАВЛЕННЫХ ФУНКЦИЙ
+
+            # Миграция 1: Добавляем поля к таблице users
+            new_user_fields = [
+                ('password_changed_at', 'TIMESTAMP NULL'),
+                ('last_login', 'TIMESTAMP NULL')
+            ]
+
+            for field_name, field_type in new_user_fields:
+                try:
+                    connection.execute(text(f"""
+                        ALTER TABLE users 
+                        ADD COLUMN {field_name} {field_type}
+                    """))
+                    connection.commit()
+                    logger.info(f"✅ Migration: Added {field_name} to users")
+                except (OperationalError, ProgrammingError) as e:
+                    if "Duplicate column name" in str(e):
+                        logger.info(f"ℹ️  Migration: {field_name} column already exists in users")
+                    else:
+                        logger.warning(f"Migration warning for {field_name} in users: {e}")
+
+            # Миграция 2: Создаем таблицу about_content
+            try:
+                connection.execute(text("""
+                    CREATE TABLE IF NOT EXISTS about_content (
+                        id INT PRIMARY KEY AUTO_INCREMENT,
+                        hero_description_uk TEXT,
+                        hero_description_en TEXT,
+                        mission_uk TEXT,
+                        mission_en TEXT,
+                        vision_uk TEXT,
+                        vision_en TEXT,
+                        why_choose_us_uk TEXT,
+                        why_choose_us_en TEXT,
+                        cta_title_uk VARCHAR(255),
+                        cta_title_en VARCHAR(255),
+                        cta_description_uk TEXT,
+                        cta_description_en TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """))
+                connection.commit()
+                logger.info("✅ Migration: Created about_content table")
+            except (OperationalError, ProgrammingError) as e:
+                if "already exists" in str(e):
+                    logger.info("ℹ️  Migration: about_content table already exists")
+                else:
+                    logger.warning(f"Migration warning for about_content table: {e}")
+
+            # Миграция 3: Создаем таблицу team_members
+            try:
+                connection.execute(text("""
+                    CREATE TABLE IF NOT EXISTS team_members (
+                        id INT PRIMARY KEY AUTO_INCREMENT,
+                        name VARCHAR(255) NOT NULL,
+                        role_uk VARCHAR(255) NOT NULL,
+                        role_en VARCHAR(255) NOT NULL,
+                        skills TEXT,
+                        avatar VARCHAR(500),
+                        initials VARCHAR(3) NOT NULL,
+                        order_index INT DEFAULT 0,
+                        is_active BOOLEAN DEFAULT TRUE,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+                        INDEX idx_team_active (is_active),
+                        INDEX idx_team_order (order_index),
+                        INDEX idx_team_active_order (is_active, order_index)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """))
+                connection.commit()
+                logger.info("✅ Migration: Created team_members table")
+            except (OperationalError, ProgrammingError) as e:
+                if "already exists" in str(e):
+                    logger.info("ℹ️  Migration: team_members table already exists")
+                else:
+                    logger.warning(f"Migration warning for team_members table: {e}")
+
+            # СУЩЕСТВУЮЩИЕ МИГРАЦИИ (с исправлениями)
+
+            # Миграция 4: Додаємо show_live_demo до designs
             try:
                 connection.execute(text("""
                     ALTER TABLE designs 
@@ -343,7 +425,7 @@ def run_migrations():
                 else:
                     logger.warning(f"Migration warning for show_live_demo: {e}")
 
-            # Міграція 2: Додаємо нові поля до designs
+            # Миграция 5: Додаємо нові поля до designs
             new_design_fields = [
                 ('slug', 'VARCHAR(255) UNIQUE'),
                 ('is_published', 'BOOLEAN DEFAULT TRUE'),
@@ -366,7 +448,7 @@ def run_migrations():
                     else:
                         logger.warning(f"Migration warning for {field_name}: {e}")
 
-            # Міграція 3: Додаємо нові поля до packages
+            # Миграция 6: Додаємо нові поля до packages
             new_package_fields = [
                 ('slug', 'VARCHAR(255) UNIQUE'),
                 ('is_active', 'BOOLEAN DEFAULT TRUE'),
@@ -387,7 +469,7 @@ def run_migrations():
                     else:
                         logger.warning(f"Migration warning for {field_name}: {e}")
 
-            # Міграція 4: Додаємо нові поля до reviews
+            # Миграция 7: Додаємо нові поля до reviews
             new_review_fields = [
                 ('is_featured', 'BOOLEAN DEFAULT FALSE'),
                 ('sort_order', 'INT DEFAULT 0'),
@@ -408,7 +490,7 @@ def run_migrations():
                     else:
                         logger.warning(f"Migration warning for {field_name}: {e}")
 
-            # Міграція 5: Додаємо нові поля до faq
+            # Миграция 8: Додаємо нові поля до faq
             try:
                 connection.execute(text("""
                     ALTER TABLE faq 
@@ -422,7 +504,7 @@ def run_migrations():
                 else:
                     logger.warning(f"Migration warning for is_active in faq: {e}")
 
-            # Міграція 6: Додаємо нові поля до content
+            # Миграция 9: Додаємо нові поля до content
             new_content_fields = [
                 ('description', 'VARCHAR(500)'),
                 ('is_active', 'BOOLEAN DEFAULT TRUE')
@@ -442,7 +524,7 @@ def run_migrations():
                     else:
                         logger.warning(f"Migration warning for {field_name}: {e}")
 
-            # Міграція 7: Додаємо робочі години до contact_info
+            # Миграция 10: Додаємо робочі години до contact_info
             try:
                 connection.execute(text("""
                     ALTER TABLE contact_info 
@@ -457,7 +539,7 @@ def run_migrations():
                 else:
                     logger.warning(f"Migration warning for working hours: {e}")
 
-            # Міграція 8: Покращуємо uploaded_files
+            # Миграция 11: Покращуємо uploaded_files
             new_file_fields = [
                 ('thumbnail_url', 'VARCHAR(500)'),
                 ('category', 'VARCHAR(50) DEFAULT "other"'),
@@ -480,7 +562,7 @@ def run_migrations():
                     else:
                         logger.warning(f"Migration warning for {field_name}: {e}")
 
-            # Міграція 9: Покращуємо policies
+            # Миграция 12: Покращуємо policies
             new_policy_fields = [
                 ('is_active', 'BOOLEAN DEFAULT TRUE'),
                 ('version', 'VARCHAR(20) DEFAULT "1.0"')
@@ -500,7 +582,7 @@ def run_migrations():
                     else:
                         logger.warning(f"Migration warning for {field_name}: {e}")
 
-            # Міграція 10: Додаємо structured_data до seo_settings
+            # Миграция 13: Додаємо structured_data до seo_settings
             try:
                 connection.execute(text("""
                     ALTER TABLE seo_settings 
@@ -514,7 +596,7 @@ def run_migrations():
                 else:
                     logger.warning(f"Migration warning for structured_data: {e}")
 
-            # Міграція 11: Додаємо поля до quote_applications
+            # Миграция 14: Додаємо поля до quote_applications
             new_quote_fields = [
                 ('response_text', 'TEXT'),
                 ('processed_at', 'TIMESTAMP NULL')
@@ -534,7 +616,7 @@ def run_migrations():
                     else:
                         logger.warning(f"Migration warning for {field_name}: {e}")
 
-            # Міграція 12: Додаємо поля до consultation_applications
+            # Миграция 15: Додаємо поля до consultation_applications
             new_consultation_fields = [
                 ('consultation_scheduled_at', 'TIMESTAMP NULL'),
                 ('consultation_completed_at', 'TIMESTAMP NULL'),
@@ -555,7 +637,7 @@ def run_migrations():
                     else:
                         logger.warning(f"Migration warning for {field_name}: {e}")
 
-            # Міграція 13: Додаємо індекси для покращення продуктивності
+            # Миграция 16: Додаємо індекси для покращення продуктивності
             indexes = [
                 ("idx_designs_category_published", "designs", ["category_id", "is_published"]),
                 ("idx_designs_featured", "designs", ["is_featured"]),
@@ -628,12 +710,65 @@ def seed_database():
     """
     from models import (
         DesignCategory, Package, ContactInfo,
-        SEOSettings, Policy, Content, SiteSettings
+        SEOSettings, Policy, Content, SiteSettings,
+        AboutContent, TeamMember
     )
 
     db = SessionLocal()
     try:
         logger.info("Seeding database with initial data...")
+
+        # Создаем базовый контент для страницы "О нас"
+        if not db.query(AboutContent).first():
+            about_content = AboutContent(
+                hero_description_uk="Ми створюємо веб-сайти, які допомагають бізнесу рости та розвиватися в цифровому світі.",
+                hero_description_en="We create websites that help businesses grow and thrive in the digital world.",
+                mission_uk="Наша місія — створювати інноваційні веб-рішення, які перевершують очікування клієнтів.",
+                mission_en="Our mission is to create innovative web solutions that exceed client expectations.",
+                vision_uk="Ми прагнемо стати провідною веб-студією в Україні.",
+                vision_en="We strive to become the leading web studio in Ukraine.",
+                why_choose_us_uk="Ми поєднуємо технічну експертизу з творчим підходом для створення унікальних рішень.",
+                why_choose_us_en="We combine technical expertise with creative approach to create unique solutions.",
+                cta_title_uk="Готові розпочати свій проект?",
+                cta_title_en="Ready to start your project?",
+                cta_description_uk="Зв'яжіться з нами сьогодні і отримайте безкоштовну консультацію.",
+                cta_description_en="Contact us today and get a free consultation."
+            )
+            db.add(about_content)
+            logger.info("✅ About content seeded!")
+
+        # Создаем начальную команду
+        if not db.query(TeamMember).first():
+            team_members = [
+                TeamMember(
+                    name="Олександр Петренко",
+                    role_uk="Керівник проектів",
+                    role_en="Project Manager",
+                    skills="Project Management, Scrum, Client Communication",
+                    initials="ОП",
+                    order_index=1
+                ),
+                TeamMember(
+                    name="Анна Коваленко",
+                    role_uk="UI/UX Дизайнер",
+                    role_en="UI/UX Designer",
+                    skills="Figma, Adobe XD, User Research, Prototyping",
+                    initials="АК",
+                    order_index=2
+                ),
+                TeamMember(
+                    name="Максим Сидоренко",
+                    role_uk="Full-stack Developer",
+                    role_en="Full-stack Developer",
+                    skills="React, Node.js, Python, MySQL, MongoDB",
+                    initials="МС",
+                    order_index=3
+                )
+            ]
+
+            for member in team_members:
+                db.add(member)
+            logger.info("✅ Team members seeded!")
 
         # Створюємо базові категорії дизайнів
         if not db.query(DesignCategory).first():
@@ -663,8 +798,10 @@ def seed_database():
                     price_en="from €1,500",
                     duration_uk="2–4 тижні",
                     duration_en="2–4 weeks",
-                    features_uk=["Простий лендінг до 5 сторінок", "Адаптивний дизайн", "Базове SEO", "SSL-сертифікат", "Хостинг на 1 рік"],
-                    features_en=["Simple landing up to 5 pages", "Responsive design", "Basic SEO", "SSL certificate", "Hosting for 1 year"],
+                    features_uk=["Простий лендінг до 5 сторінок", "Адаптивний дизайн", "Базове SEO", "SSL-сертифікат",
+                                 "Хостинг на 1 рік"],
+                    features_en=["Simple landing up to 5 pages", "Responsive design", "Basic SEO", "SSL certificate",
+                                 "Hosting for 1 year"],
                     advantages_uk=["Швидкий запуск", "Економічно вигідно", "Базова функціональність"],
                     advantages_en=["Quick launch", "Cost effective", "Basic functionality"],
                     process_uk=["Консультація", "Дизайн", "Розробка", "Запуск"],
@@ -680,8 +817,10 @@ def seed_database():
                     price_en="from €3,500",
                     duration_uk="4–8 тижнів",
                     duration_en="4–8 weeks",
-                    features_uk=["Корпоративний сайт до 15 сторінок", "Інтеграції API", "Google Analytics", "Адмін-панель", "Форми зворотного зв'язку", "Інтеграція з соцмережами"],
-                    features_en=["Corporate website up to 15 pages", "API integrations", "Google Analytics", "Admin panel", "Contact forms", "Social media integration"],
+                    features_uk=["Корпоративний сайт до 15 сторінок", "Інтеграції API", "Google Analytics",
+                                 "Адмін-панель", "Форми зворотного зв'язку", "Інтеграція з соцмережами"],
+                    features_en=["Corporate website up to 15 pages", "API integrations", "Google Analytics",
+                                 "Admin panel", "Contact forms", "Social media integration"],
                     advantages_uk=["Повна функціональність", "Готовий для бізнесу", "Професійний дизайн"],
                     advantages_en=["Full functionality", "Business ready", "Professional design"],
                     process_uk=["Аналіз вимог", "UI/UX дизайн", "Розробка", "Тестування", "Запуск"],
@@ -697,12 +836,16 @@ def seed_database():
                     price_en="from €7,500",
                     duration_uk="8–16 тижнів",
                     duration_en="8–16 weeks",
-                    features_uk=["Необмежена кількість сторінок", "Складні інтеграції", "CRM система", "Електронна комерція", "Мобільний додаток", "Додаткова безпека"],
-                    features_en=["Unlimited pages", "Complex integrations", "CRM system", "E-commerce", "Mobile app", "Advanced security"],
+                    features_uk=["Необмежена кількість сторінок", "Складні інтеграції", "CRM система",
+                                 "Електронна комерція", "Мобільний додаток", "Додаткова безпека"],
+                    features_en=["Unlimited pages", "Complex integrations", "CRM system", "E-commerce", "Mobile app",
+                                 "Advanced security"],
                     advantages_uk=["Масштабованість", "Максимальна функціональність", "Індивідуальний підхід"],
                     advantages_en=["Scalability", "Maximum functionality", "Individual approach"],
-                    process_uk=["Глибокий аналіз", "Архітектура", "Поетапна розробка", "Інтеграції", "Запуск", "Навчання"],
-                    process_en=["Deep analysis", "Architecture", "Phased development", "Integrations", "Launch", "Training"],
+                    process_uk=["Глибокий аналіз", "Архітектура", "Поетапна розробка", "Інтеграції", "Запуск",
+                                "Навчання"],
+                    process_en=["Deep analysis", "Architecture", "Phased development", "Integrations", "Launch",
+                                "Training"],
                     support_uk="1 рік безкоштовної підтримки + постійний супровід",
                     support_en="1 year free support + ongoing maintenance",
                     is_popular=False
@@ -901,7 +1044,8 @@ def get_database_stats() -> Dict[str, Any]:
     """
     from models import (
         User, Design, Package, Review, QuoteApplication,
-        ConsultationApplication, FAQ, Content, UploadedFile
+        ConsultationApplication, FAQ, Content, UploadedFile,
+        AboutContent, TeamMember
     )
 
     db = SessionLocal()
@@ -924,7 +1068,10 @@ def get_database_stats() -> Dict[str, Any]:
             ).count(),
             "faq": db.query(FAQ).count(),
             "content": db.query(Content).count(),
-            "uploaded_files": db.query(UploadedFile).count()
+            "uploaded_files": db.query(UploadedFile).count(),
+            "about_content": db.query(AboutContent).count(),
+            "team_members": db.query(TeamMember).count(),
+            "active_team_members": db.query(TeamMember).filter(TeamMember.is_active == True).count()
         }
 
         # Додаємо інформацію про з'єднання

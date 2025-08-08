@@ -84,10 +84,29 @@ class UserResponse(UserBase):
     is_admin: bool = False
     is_active: bool = True
     avatar_url: Optional[str] = None
+    password_changed_at: Optional[datetime] = None
+    last_login: Optional[datetime] = None
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+
+# НОВАЯ СХЕМА: Смена пароля
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=6, max_length=128)
+
+    @validator('new_password')
+    def validate_new_password(cls, v):
+        if len(v) < 6:
+            raise ValueError('New password must be at least 6 characters long')
+        return v
+
+
+class PasswordChangeResponse(BaseModel):
+    message: str
+    changed_at: datetime
 
 
 # ============ СХЕМИ ДИЗАЙНІВ ============
@@ -275,6 +294,104 @@ class Package(PackageBase):
     meta_description_en: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+# ============ НОВЫЕ СХЕМЫ: О НАС И КОМАНДА ============
+
+# Схемы для членов команды
+class TeamMemberBase(BaseModel):
+    name: str = Field(..., min_length=2, max_length=255)
+    role_uk: str = Field(..., min_length=2, max_length=255)
+    role_en: str = Field(..., min_length=2, max_length=255)
+    skills: Optional[str] = None
+    avatar: Optional[str] = None
+    initials: str = Field(..., min_length=2, max_length=3)
+
+    @validator('initials')
+    def validate_initials(cls, v):
+        if not v or not v.strip():
+            raise ValueError('Initials are required')
+        return v.strip().upper()
+
+    @validator('skills')
+    def validate_skills(cls, v):
+        if v:
+            return v.strip()
+        return v
+
+
+class TeamMemberCreate(TeamMemberBase):
+    order_index: int = 0
+    is_active: bool = True
+
+
+class TeamMemberUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=2, max_length=255)
+    role_uk: Optional[str] = Field(None, min_length=2, max_length=255)
+    role_en: Optional[str] = Field(None, min_length=2, max_length=255)
+    skills: Optional[str] = None
+    avatar: Optional[str] = None
+    initials: Optional[str] = Field(None, min_length=2, max_length=3)
+    order_index: Optional[int] = None
+    is_active: Optional[bool] = None
+
+    @validator('initials')
+    def validate_initials(cls, v):
+        if v:
+            return v.strip().upper()
+        return v
+
+
+class TeamMember(TeamMemberBase):
+    id: int
+    order_index: int
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# Схемы для контента страницы О нас
+class AboutContentBase(BaseModel):
+    hero_description_uk: Optional[str] = None
+    hero_description_en: Optional[str] = None
+    mission_uk: Optional[str] = None
+    mission_en: Optional[str] = None
+    vision_uk: Optional[str] = None
+    vision_en: Optional[str] = None
+    why_choose_us_uk: Optional[str] = None
+    why_choose_us_en: Optional[str] = None
+    cta_title_uk: Optional[str] = None
+    cta_title_en: Optional[str] = None
+    cta_description_uk: Optional[str] = None
+    cta_description_en: Optional[str] = None
+
+
+class AboutContentCreate(AboutContentBase):
+    pass
+
+
+class AboutContentUpdate(AboutContentBase):
+    pass
+
+
+class AboutContent(AboutContentBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# Комбинированная схема для страницы "О нас" с командой
+class AboutPageResponse(AboutContent):
+    team: List[TeamMember] = []
 
     class Config:
         from_attributes = True
