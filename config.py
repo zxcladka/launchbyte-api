@@ -58,7 +58,11 @@ class Settings:
         "http://127.0.0.1:3000",
         "https://webcraft.pro",
         "https://www.webcraft.pro",
-        "https://admin.webcraft.pro"
+        "https://admin.webcraft.pro",
+        # 🆕 ДОБАВЛЯЕМ ПРОДАКШН ДОМЕНЫ ДЛЯ LAUNCHBYTE:
+        "https://launchbyte.org",           # ← ОСНОВНОЙ ДОМЕН
+        "https://www.launchbyte.org",       # ← WWW версия
+        "https://launchbyte-api-production.up.railway.app"  # ← API домен (для самообращений)
     ]
 
     # Додаткові origins з ENV

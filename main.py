@@ -446,16 +446,13 @@ if settings.ENVIRONMENT == "production":
     trusted_hosts = getattr(settings, 'TRUSTED_HOSTS', ["webcraft.pro", "*.webcraft.pro"])
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts)
 
-# CORS с улучшенной конфигурацией
-cors_origins = ["http://localhost:3000", "http://localhost:3001"]
-if hasattr(settings, 'FRONTEND_URLS'):
-    cors_origins.extend(settings.FRONTEND_URLS)
-
+# 🔧 CORS MIDDLEWARE - ИСПРАВЛЕНО ДЛЯ LAUNCHBYTE.ORG
+logger.info(f"🌐 Configuring CORS for origins: {settings.ALLOWED_ORIGINS}")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_origins=settings.ALLOWED_ORIGINS,  # ← ИСПОЛЬЗУЕТ НАСТРОЙКИ ИЗ CONFIG.PY
+    allow_credentials=settings.CORS_ALLOW_CREDENTIALS,
+    allow_methods=settings.CORS_ALLOW_METHODS,
     allow_headers=[
         "Accept",
         "Accept-Language",
@@ -466,7 +463,8 @@ app.add_middleware(
         "X-Request-ID",
         "Cache-Control"
     ],
-    expose_headers=["X-Request-ID", "X-API-Version"]
+    expose_headers=["X-Request-ID", "X-API-Version"],
+    max_age=600  # Кэшируем preflight запросы на 10 минут
 )
 
 
@@ -599,6 +597,10 @@ async def root():
             "total_size": upload_stats.get('total_size_human', '0 B'),
             "usage_percentage": storage_usage.get('usage_percentage', 0)
         },
+        "cors": {
+            "allowed_origins": settings.ALLOWED_ORIGINS,
+            "status": "configured"
+        },
         "features": {
             "authentication": "JWT with cookies",
             "database": "MySQL with migrations",
@@ -694,6 +696,15 @@ async def health_check():
     except Exception as e:
         checks["new_features"] = {"status": "error", "details": str(e)}
 
+    # 🆕 CORS проверка
+    checks["cors"] = {
+        "status": "ok",
+        "details": {
+            "allowed_origins": len(settings.ALLOWED_ORIGINS),
+            "launchbyte_configured": "https://launchbyte.org" in settings.ALLOWED_ORIGINS
+        }
+    }
+
     return {
         "status": overall_status,
         "timestamp": int(time.time()),
@@ -748,6 +759,12 @@ async def get_metrics():
             f'webcraft_about_content_entries {db_stats.get("about_content", 0)}'
         ])
 
+        # CORS метрики
+        metrics.extend([
+            f'webcraft_cors_origins_total {len(settings.ALLOWED_ORIGINS)}',
+            f'webcraft_cors_launchbyte_configured {int("https://launchbyte.org" in settings.ALLOWED_ORIGINS)}'
+        ])
+
         return Response(
             content="\n".join(metrics) + "\n",
             media_type="text/plain"
@@ -791,6 +808,11 @@ async def get_api_info():
             "name": settings.DB_NAME,
             "host": settings.DB_HOST,
             "charset": "utf8mb4"
+        },
+        "cors": {
+            "allowed_origins": settings.ALLOWED_ORIGINS,
+            "allow_credentials": settings.CORS_ALLOW_CREDENTIALS,
+            "launchbyte_support": "https://launchbyte.org" in settings.ALLOWED_ORIGINS
         },
         "features": {
             "authentication": True,
