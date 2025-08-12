@@ -51,17 +51,20 @@ class Settings:
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))  # 24 години
     REFRESH_TOKEN_EXPIRE_DAYS: int = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))  # 30 днів
 
-    # ============ CORS НАЛАШТУВАННЯ ============
+    # ============ CORS НАЛАШТУВАННЯ (ИСПРАВЛЕНО) ============
     ALLOWED_ORIGINS: List[str] = [
         "http://localhost:3000",
         "http://localhost:3001",
+        "http://localhost:5173",  # Vite dev server
+        "http://localhost:8080",  # Vue dev server
         "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
         "https://webcraft.pro",
         "https://www.webcraft.pro",
         "https://admin.webcraft.pro",
-        # 🆕 ДОБАВЛЯЕМ ПРОДАКШН ДОМЕНЫ ДЛЯ LAUNCHBYTE:
-        "https://launchbyte.org",           # ← ОСНОВНОЙ ДОМЕН
-        "https://www.launchbyte.org",       # ← WWW версия
+        # ДОБАВЛЯЕМ ПРОДАКШН ДОМЕНЫ ДЛЯ LAUNCHBYTE:
+        "https://launchbyte.org",  # ← ОСНОВНОЙ ДОМЕН
+        "https://www.launchbyte.org",  # ← WWW версия
         "https://launchbyte-api-production.up.railway.app"  # ← API домен (для самообращений)
     ]
 
@@ -134,12 +137,22 @@ class Settings:
     FORM_RATE_LIMIT_PER_MINUTE: int = int(os.getenv("FORM_RATE_LIMIT_PER_MINUTE", "5"))
     FORM_RATE_LIMIT_PER_HOUR: int = int(os.getenv("FORM_RATE_LIMIT_PER_HOUR", "20"))
 
-    # ============ COOKIE НАЛАШТУВАННЯ ============
-    COOKIE_SECURE: bool = not DEBUG and ENVIRONMENT == "production"
-    COOKIE_HTTPONLY: bool = True
-    COOKIE_SAMESITE: str = "lax"
+    # ============ COOKIE НАЛАШТУВАННЯ (ИСПРАВЛЕНО ДЛЯ КРОСС-ДОМЕННОЙ РАБОТЫ) ============
+    # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: настройки cookie для работы с фронтендом
+    COOKIE_SECURE: bool = ENVIRONMENT == "production"  # Только HTTPS в продакшене
+    COOKIE_HTTPONLY: bool = False  # ИСПРАВЛЕНО: False для доступа из JavaScript
+    COOKIE_SAMESITE: str = "none" if ENVIRONMENT == "production" else "lax"  # ИСПРАВЛЕНО: none для кросс-доменных запросов
     COOKIE_MAX_AGE: int = ACCESS_TOKEN_EXPIRE_MINUTES * 60  # в секундах
-    COOKIE_DOMAIN: Optional[str] = os.getenv("COOKIE_DOMAIN")
+    # ИСПРАВЛЕНО: убираем ограничение домена для гибкости
+    COOKIE_DOMAIN: Optional[str] = None  # Автоматически определяется браузером
+
+    # Дополнительные настройки для сессий
+    SESSION_COOKIE_NAME: str = "webcraft_session"
+    TOKEN_COOKIE_NAME: str = "access_token"
+
+    # ИСПРАВЛЕНИЕ: Дополнительные настройки cookie для стабильной аутентификации
+    COOKIE_EXPIRE_HOURS: int = int(os.getenv("COOKIE_EXPIRE_HOURS", "24"))
+    COOKIE_REFRESH_THRESHOLD: int = int(os.getenv("COOKIE_REFRESH_THRESHOLD", "6"))  # часов до истечения для обновления
 
     # ============ КЕШУВАННЯ (REDIS) ============
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")

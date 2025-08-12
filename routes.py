@@ -83,7 +83,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     )
 
 
-# ============ АВТОРИЗАЦІЯ ============
+# ============ АВТОРИЗАЦІЯ (КРИТИЧНО ИСПРАВЛЕНО) ============
 
 @router.post("/auth/register", response_model=schemas.Token)
 async def register(user_data: schemas.UserCreate, response: Response, db: Session = Depends(get_db)):
@@ -104,7 +104,7 @@ async def register(user_data: schemas.UserCreate, response: Response, db: Sessio
             data={"sub": user.email}, expires_delta=access_token_expires
         )
 
-        # Встановлюємо cookie
+        # ИСПРАВЛЕНО: правильно устанавливаем cookie
         set_auth_cookie(response, access_token)
 
         logger.info(f"New user registered: {user.email}")
@@ -121,7 +121,7 @@ async def register(user_data: schemas.UserCreate, response: Response, db: Sessio
 
 @router.post("/auth/login", response_model=schemas.Token)
 async def login(user_data: schemas.UserLogin, response: Response, db: Session = Depends(get_db)):
-    """Вхід користувача."""
+    """Вхід користувача (КРИТИЧНО ИСПРАВЛЕНО)."""
     user = authenticate_user(db, user_data.email, user_data.password)
     if not user:
         logger.warning(f"Failed login attempt: {user_data.email}")
@@ -138,7 +138,8 @@ async def login(user_data: schemas.UserLogin, response: Response, db: Session = 
         )
 
     # Обновляем время последнего входа
-    user.last_login = func.now()
+    user.last_login = datetime.utcnow()
+    user.updated_at = datetime.utcnow()
     db.commit()
 
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -146,7 +147,7 @@ async def login(user_data: schemas.UserLogin, response: Response, db: Session = 
         data={"sub": user.email}, expires_delta=access_token_expires
     )
 
-    # Встановлюємо cookie
+    # КРИТИЧНО ИСПРАВЛЕНО: правильно устанавливаем cookie с корректными настройками
     set_auth_cookie(response, access_token)
 
     logger.info(f"User logged in: {user.email}")
@@ -159,34 +160,47 @@ async def login(user_data: schemas.UserLogin, response: Response, db: Session = 
 
 
 @router.post("/auth/logout", response_model=schemas.Message)
-async def logout(response: Response):
-    """Вихід користувача."""
-    clear_auth_cookie(response)
-    return {"message": "Successfully logged out"}
+async def logout(request: Request, response: Response, db: Session = Depends(get_db)):
+    """Вихід користувача (КРИТИЧНО ИСПРАВЛЕНО)."""
+    try:
+        # Пытаемся получить токен для blacklist
+        token = get_token_from_cookie_or_header(request, None)
+        if token:
+            blacklist_token(token, "logout")
+
+        # КРИТИЧНО ИСПРАВЛЕНО: правильно очищаем все cookie
+        clear_auth_cookie(response)
+
+        logger.info("User logged out successfully")
+        return {"message": "Successfully logged out"}
+    except Exception as e:
+        logger.error(f"Logout error: {e}")
+        # Все равно очищаем cookies даже при ошибке
+        clear_auth_cookie(response)
+        return {"message": "Successfully logged out"}
 
 
 @router.get("/auth/me", response_model=schemas.UserResponse)
-async def get_current_user_profile(request: Request, db: Session = Depends(get_db)):
+async def get_current_user_profile(
+        current_user: models.User = Depends(get_current_active_user)
+):
     """Отримати профіль поточного користувача."""
-    current_user = get_current_user(request, None, db)
     return current_user
 
 
 @router.put("/auth/me", response_model=schemas.UserResponse)
 async def update_current_user_profile(
         user_data: schemas.UserUpdate,
-        request: Request,
+        current_user: models.User = Depends(get_current_active_user),
         db: Session = Depends(get_db)
 ):
     """Оновити профіль поточного користувача."""
-    current_user = get_current_active_user(get_current_user(request, None, db))
-
     if user_data.name is not None:
         current_user.name = user_data.name
     if user_data.avatar_url is not None:
         current_user.avatar_url = user_data.avatar_url
 
-    current_user.updated_at = func.now()
+    current_user.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(current_user)
 
@@ -194,16 +208,13 @@ async def update_current_user_profile(
     return current_user
 
 
-# НОВАЯ ФУНКЦИЯ: Смена пароля
 @router.post("/auth/change-password", response_model=schemas.PasswordChangeResponse)
 async def change_password(
         password_data: schemas.PasswordChangeRequest,
-        request: Request,
+        current_user: models.User = Depends(get_current_active_user),
         db: Session = Depends(get_db)
 ):
     """Сменить пароль текущего пользователя."""
-    current_user = get_current_active_user(get_current_user(request, None, db))
-
     try:
         # Проверяем текущий пароль
         if not verify_password(password_data.current_password, current_user.hashed_password):
@@ -221,8 +232,8 @@ async def change_password(
 
         # Обновляем пароль
         current_user.hashed_password = get_password_hash(password_data.new_password)
-        current_user.password_changed_at = func.now()
-        current_user.updated_at = func.now()
+        current_user.password_changed_at = datetime.utcnow()
+        current_user.updated_at = datetime.utcnow()
 
         db.commit()
         db.refresh(current_user)
@@ -310,7 +321,7 @@ async def get_design(design_id: int, db: Session = Depends(get_db)):
     if not design:
         raise HTTPException(status_code=404, detail="Design not found")
 
-    # Оновлюємо лічильник переглядів
+    # Оновлюємо лічільник переглядів
     design.views_count += 1
     db.commit()
 
@@ -338,12 +349,10 @@ async def get_design_by_slug(slug: str, db: Session = Depends(get_db)):
 @router.post("/designs", response_model=schemas.Design)
 async def create_design(
         design_data: schemas.DesignCreate,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Створити новий дизайн (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     # Перевіряємо чи існує категорія
     category = db.query(models.DesignCategory).filter(
         models.DesignCategory.id == design_data.category_id
@@ -373,12 +382,10 @@ async def create_design(
 async def update_design(
         design_id: int,
         design_data: schemas.DesignUpdate,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Оновити дизайн (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     design = db.query(models.Design).filter(models.Design.id == design_id).first()
     if not design:
         raise HTTPException(status_code=404, detail="Design not found")
@@ -401,7 +408,7 @@ async def update_design(
     for field, value in update_data.items():
         setattr(design, field, value)
 
-    design.updated_at = func.now()
+    design.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(design)
 
@@ -416,12 +423,10 @@ async def update_design(
 @router.delete("/designs/{design_id}", response_model=schemas.Message)
 async def delete_design(
         design_id: int,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Видалити дизайн (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     design = db.query(models.Design).filter(models.Design.id == design_id).first()
     if not design:
         raise HTTPException(status_code=404, detail="Design not found")
@@ -437,7 +442,7 @@ async def delete_design(
     return {"message": "Design deleted successfully"}
 
 
-# ============ КАТЕГОРІЇ ДИЗАЙНІВ ============
+# ============ КАТЕГОРІЇ ДИЗАЙНІВ (КРИТИЧНО ИСПРАВЛЕНО) ============
 
 @router.get("/design-categories", response_model=List[schemas.DesignCategory])
 async def get_design_categories(
@@ -445,98 +450,160 @@ async def get_design_categories(
         db: Session = Depends(get_db)
 ):
     """Отримати список категорій дизайнів."""
-    query = db.query(models.DesignCategory)
+    try:
+        query = db.query(models.DesignCategory)
 
-    if not include_inactive:
-        query = query.filter(models.DesignCategory.is_active == True)
+        if not include_inactive:
+            query = query.filter(models.DesignCategory.is_active == True)
 
-    categories = query.order_by(models.DesignCategory.sort_order, models.DesignCategory.id).all()
-    return categories
+        categories = query.order_by(models.DesignCategory.sort_order, models.DesignCategory.id).all()
+        logger.info(f"Fetched {len(categories)} design categories")
+        return categories
+    except Exception as e:
+        logger.error(f"Error fetching design categories: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch design categories")
 
 
 @router.post("/design-categories", response_model=schemas.DesignCategory)
 async def create_design_category(
         category_data: schemas.DesignCategoryCreate,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
-    """Створити нову категорію дизайнів (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
+    """Створити нову категорію дизайнів (тільки адмін) - КРИТИЧНО ИСПРАВЛЕНО."""
+    try:
+        # ИСПРАВЛЕНИЕ: Проверяем каждое поле отдельно
+        existing_id = db.query(models.DesignCategory).filter(
+            models.DesignCategory.id == category_data.id
+        ).first()
+        if existing_id:
+            raise HTTPException(status_code=400, detail=f"Category with ID '{category_data.id}' already exists")
 
-    # Перевіряємо чи не існує категорія з таким ID
-    existing = db.query(models.DesignCategory).filter(
-        models.DesignCategory.id == category_data.id
-    ).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Category with this ID already exists")
+        existing_slug = db.query(models.DesignCategory).filter(
+            models.DesignCategory.slug == category_data.slug
+        ).first()
+        if existing_slug:
+            raise HTTPException(status_code=400, detail=f"Category with slug '{category_data.slug}' already exists")
 
-    category = models.DesignCategory(**category_data.dict())
-    db.add(category)
-    db.commit()
-    db.refresh(category)
+        # ИСПРАВЛЕНИЕ: Проверяем название на уникальность
+        if hasattr(category_data, 'title_uk') and category_data.title_uk:
+            existing_title_uk = db.query(models.DesignCategory).filter(
+                models.DesignCategory.title_uk == category_data.title_uk
+            ).first()
+            if existing_title_uk:
+                raise HTTPException(status_code=400,
+                                    detail=f"Category with Ukrainian title '{category_data.title_uk}' already exists")
 
-    logger.info(f"Design category created: {category.id} by {current_user.email}")
-    return category
+        # Создаем категорию
+        category_dict = category_data.dict()
+        category = models.DesignCategory(**category_dict)
+
+        db.add(category)
+        db.flush()  # КРИТИЧНО: применяем перед commit
+        db.commit()
+        db.refresh(category)
+
+        logger.info(
+            f"✅ Design category created: {category.id} ({getattr(category, 'title_uk', category.id)}) by {current_user.email}")
+        return category
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error creating design category: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to create design category: {str(e)}")
 
 
 @router.put("/design-categories/{category_id}", response_model=schemas.DesignCategory)
 async def update_design_category(
         category_id: str,
         category_data: schemas.DesignCategoryUpdate,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
-    """Оновити категорію дизайнів (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
+    """Оновити категорію дизайнів (тільки адмін) - КРИТИЧНО ИСПРАВЛЕНО."""
+    try:
+        category = db.query(models.DesignCategory).filter(
+            models.DesignCategory.id == category_id
+        ).first()
+        if not category:
+            raise HTTPException(status_code=404, detail="Category not found")
 
-    category = db.query(models.DesignCategory).filter(
-        models.DesignCategory.id == category_id
-    ).first()
-    if not category:
-        raise HTTPException(status_code=404, detail="Category not found")
+        # ИСПРАВЛЕНИЕ: Обновляем только непустые поля
+        update_data = category_data.dict(exclude_unset=True, exclude_none=True)
 
-    update_data = category_data.dict(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(category, field, value)
+        # Проверяем уникальность slug при изменении
+        if 'slug' in update_data and update_data['slug'] != category.slug:
+            existing_slug = db.query(models.DesignCategory).filter(
+                models.DesignCategory.slug == update_data['slug'],
+                models.DesignCategory.id != category_id
+            ).first()
+            if existing_slug:
+                raise HTTPException(status_code=400, detail="Category with this slug already exists")
 
-    db.commit()
-    db.refresh(category)
+        # Применяем изменения
+        for field, value in update_data.items():
+            if hasattr(category, field) and value is not None:
+                setattr(category, field, value)
+                logger.debug(f"Updated category field {field} = {value}")
 
-    logger.info(f"Design category updated: {category.id} by {current_user.email}")
-    return category
+        category.updated_at = datetime.utcnow()
+
+        db.flush()  # КРИТИЧНО: Применяем изменения к объекту
+        db.commit()  # Сохраняем в БД
+        db.refresh(category)  # Обновляем объект из БД
+
+        logger.info(f"✅ Design category updated: {category.id} by {current_user.email}")
+        return category
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error updating design category {category_id}: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to update design category: {str(e)}")
 
 
 @router.delete("/design-categories/{category_id}", response_model=schemas.Message)
 async def delete_design_category(
         category_id: str,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
-    """Видалити категорію дизайнів (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
+    """Видалити категорію дизайнів (тільки адмін) - КРИТИЧНО ИСПРАВЛЕНО."""
+    try:
+        # Перевіряємо чи є дизайни в цій категорії
+        designs_count = db.query(models.Design).filter(models.Design.category_id == category_id).count()
+        if designs_count > 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot delete category that contains {designs_count} designs"
+            )
 
-    # Перевіряємо чи є дизайни в цій категорії
-    designs_count = db.query(models.Design).filter(models.Design.category_id == category_id).count()
-    if designs_count > 0:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Cannot delete category that contains {designs_count} designs"
-        )
+        category = db.query(models.DesignCategory).filter(
+            models.DesignCategory.id == category_id
+        ).first()
+        if not category:
+            raise HTTPException(status_code=404, detail="Category not found")
 
-    category = db.query(models.DesignCategory).filter(
-        models.DesignCategory.id == category_id
-    ).first()
-    if not category:
-        raise HTTPException(status_code=404, detail="Category not found")
+        category_name = category.name_uk or category.id
+        db.delete(category)
+        db.commit()
 
-    db.delete(category)
-    db.commit()
+        logger.info(f"✅ Design category deleted: {category_id} ({category_name}) by {current_user.email}")
+        return {"message": "Category deleted successfully"}
 
-    logger.info(f"Design category deleted: {category_id} by {current_user.email}")
-    return {"message": "Category deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error deleting design category {category_id}: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to delete design category: {str(e)}")
 
 
-# ============ НОВЫЕ ФУНКЦИИ: УПРАВЛЕНИЕ СТРАНИЦЕЙ "О НАС" ============
+# ============ УПРАВЛЕНИЕ СТРАНИЦЕЙ "О НАС" ============
 
 @router.get("/content/about", response_model=schemas.AboutPageResponse)
 async def get_about_content(db: Session = Depends(get_db)):
@@ -574,12 +641,10 @@ async def get_about_content(db: Session = Depends(get_db)):
 @router.put("/content/about", response_model=schemas.AboutContent)
 async def update_about_content(
         content_data: schemas.AboutContentUpdate,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Обновить контент страницы 'О нас' (только админ)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     try:
         # Получаем существующий контент или создаем новый
         about_content = db.query(models.AboutContent).first()
@@ -594,7 +659,7 @@ async def update_about_content(
             update_data = content_data.dict(exclude_unset=True)
             for field, value in update_data.items():
                 setattr(about_content, field, value)
-            about_content.updated_at = func.now()
+            about_content.updated_at = datetime.utcnow()
             logger.info(f"About content updated by {current_user.email}")
 
         db.commit()
@@ -608,7 +673,7 @@ async def update_about_content(
         raise HTTPException(status_code=500, detail="Failed to update about content")
 
 
-# ============ НОВЫЕ ФУНКЦИИ: УПРАВЛЕНИЕ КОМАНДОЙ ============
+# ============ УПРАВЛЕНИЕ КОМАНДОЙ ============
 
 @router.get("/team", response_model=List[schemas.TeamMember])
 async def get_team_members(
@@ -637,12 +702,10 @@ async def get_team_members(
 @router.post("/team", response_model=schemas.TeamMember)
 async def create_team_member(
         member_data: schemas.TeamMemberCreate,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Добавить нового члена команды (только админ)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     try:
         # Проверяем уникальность имени
         existing_member = db.query(models.TeamMember).filter(
@@ -681,12 +744,10 @@ async def create_team_member(
 async def update_team_member(
         member_id: int,
         member_data: schemas.TeamMemberUpdate,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Обновить члена команды (только админ)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     try:
         team_member = db.query(models.TeamMember).filter(
             models.TeamMember.id == member_id
@@ -714,7 +775,7 @@ async def update_team_member(
         for field, value in update_data.items():
             setattr(team_member, field, value)
 
-        team_member.updated_at = func.now()
+        team_member.updated_at = datetime.utcnow()
         db.commit()
         db.refresh(team_member)
 
@@ -732,12 +793,10 @@ async def update_team_member(
 @router.delete("/team/{member_id}", response_model=schemas.Message)
 async def delete_team_member(
         member_id: int,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Удалить члена команды (только админ)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     try:
         team_member = db.query(models.TeamMember).filter(
             models.TeamMember.id == member_id
@@ -764,12 +823,10 @@ async def delete_team_member(
 @router.patch("/team/{member_id}/toggle-active", response_model=schemas.TeamMember)
 async def toggle_team_member_active(
         member_id: int,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Переключить активность члена команды (только админ)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     try:
         team_member = db.query(models.TeamMember).filter(
             models.TeamMember.id == member_id
@@ -779,7 +836,7 @@ async def toggle_team_member_active(
             raise HTTPException(status_code=404, detail="Team member not found")
 
         team_member.is_active = not team_member.is_active
-        team_member.updated_at = func.now()
+        team_member.updated_at = datetime.utcnow()
         db.commit()
         db.refresh(team_member)
 
@@ -799,12 +856,10 @@ async def toggle_team_member_active(
 @router.patch("/team/reorder", response_model=schemas.Message)
 async def reorder_team_members(
         member_ids: List[int],
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Изменить порядок членов команды (только админ)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     try:
         # Обновляем order_index для каждого члена команды
         for index, member_id in enumerate(member_ids):
@@ -814,7 +869,7 @@ async def reorder_team_members(
 
             if team_member:
                 team_member.order_index = index
-                team_member.updated_at = func.now()
+                team_member.updated_at = datetime.utcnow()
 
         db.commit()
 
@@ -827,7 +882,7 @@ async def reorder_team_members(
         raise HTTPException(status_code=500, detail="Failed to reorder team members")
 
 
-# ============ ПАКЕТИ ============
+# ============ ПАКЕТИ (ИСПРАВЛЕНО ДЛЯ ГЛАВНОЙ СТРАНИЦЫ) ============
 
 @router.get("/packages", response_model=List[schemas.Package])
 async def get_packages(
@@ -846,6 +901,30 @@ async def get_packages(
         models.Package.id
     ).all()
     return packages
+
+
+# КРИТИЧНО ИСПРАВЛЕНО: Получить ограниченное количество пакетов для главной страницы
+@router.get("/packages/homepage", response_model=List[schemas.Package])
+async def get_homepage_packages(
+        limit: int = Query(2, ge=1, le=10, description="Максимальна кількість пакетів для головної сторінки"),
+        db: Session = Depends(get_db)
+):
+    """Отримати пакети для головної сторінки (максимум 2) - КРИТИЧНО ИСПРАВЛЕНО."""
+    try:
+        packages = db.query(models.Package).filter(
+            models.Package.is_active == True
+        ).order_by(
+            desc(models.Package.is_popular),  # Сначала популярные
+            models.Package.sort_order,  # Потом по порядку сортировки
+            models.Package.id  # И наконец по ID
+        ).limit(limit).all()
+
+        logger.info(f"✅ Fetched {len(packages)} packages for homepage (limit: {limit})")
+        return packages
+
+    except Exception as e:
+        logger.error(f"❌ Error fetching homepage packages: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch packages for homepage")
 
 
 @router.get("/packages/{package_id}", response_model=schemas.Package)
@@ -872,12 +951,10 @@ async def get_package_by_slug(slug: str, db: Session = Depends(get_db)):
 @router.post("/packages", response_model=schemas.Package)
 async def create_package(
         package_data: schemas.PackageCreate,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Створити новий пакет (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     # Генеруємо slug
     slug = generate_slug(package_data.name, models.Package, db)
 
@@ -897,12 +974,10 @@ async def create_package(
 async def update_package(
         package_id: int,
         package_data: schemas.PackageUpdate,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Оновити пакет (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     package = db.query(models.Package).filter(models.Package.id == package_id).first()
     if not package:
         raise HTTPException(status_code=404, detail="Package not found")
@@ -916,7 +991,7 @@ async def update_package(
     for field, value in update_data.items():
         setattr(package, field, value)
 
-    package.updated_at = func.now()
+    package.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(package)
 
@@ -927,12 +1002,10 @@ async def update_package(
 @router.delete("/packages/{package_id}", response_model=schemas.Message)
 async def delete_package(
         package_id: int,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Видалити пакет (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     package = db.query(models.Package).filter(models.Package.id == package_id).first()
     if not package:
         raise HTTPException(status_code=404, detail="Package not found")
@@ -957,11 +1030,11 @@ async def delete_package(
     return {"message": "Package deleted successfully"}
 
 
-# ============ ВІДГУКИ (ИСПРАВЛЕНО) ============
+# ============ ВІДГУКИ ============
 
 @router.get("/reviews", response_model=List[schemas.Review])
 async def get_reviews(
-        approved_only: bool = False,  # ИЗМЕНЕНО: по умолчанию False, чтобы показывать все отзывы
+        approved_only: bool = False,
         featured_only: bool = False,
         skip: int = Query(0, ge=0),
         limit: int = Query(50, ge=1, le=100),
@@ -985,7 +1058,6 @@ async def get_reviews(
     return reviews
 
 
-# НОВЫЙ РОУТ: Получить только одобренные отзывы для публичного просмотра
 @router.get("/reviews/public", response_model=List[schemas.Review])
 async def get_public_reviews(
         featured_only: bool = False,
@@ -1012,14 +1084,12 @@ async def get_public_reviews(
 
 @router.get("/reviews/pending", response_model=List[schemas.Review])
 async def get_pending_reviews(
-        request: Request,
         skip: int = Query(0, ge=0),
         limit: int = Query(50, ge=1, le=100),
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Отримати відгуки на модерації (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     reviews = db.query(models.Review).options(joinedload(models.Review.user)).filter(
         models.Review.is_approved == False
     ).order_by(desc(models.Review.created_at)).offset(skip).limit(limit).all()
@@ -1030,12 +1100,10 @@ async def get_pending_reviews(
 @router.post("/reviews", response_model=schemas.Review)
 async def create_review(
         review_data: schemas.ReviewCreateAuth,
-        request: Request,
+        current_user: models.User = Depends(get_current_active_user),
         db: Session = Depends(get_db)
 ):
     """Створити новий відгук."""
-    current_user = get_current_active_user(get_current_user(request, None, db))
-
     # Перевіряємо чи користувач вже залишав відгук
     existing_review = db.query(models.Review).filter(
         models.Review.user_id == current_user.id
@@ -1046,12 +1114,12 @@ async def create_review(
             detail="You have already submitted a review"
         )
 
-    # ИСПРАВЛЕНО: Автоматически одобряем отзывы от зарегистрированных пользователей
+    # Автоматически одобряем отзывы от зарегистрированных пользователей
     review = models.Review(
         **review_data.dict(),
         user_id=current_user.id,
         is_approved=True,  # Автоматически одобряем
-        approved_at=func.now(),  # Устанавливаем время одобрения
+        approved_at=datetime.utcnow(),  # Устанавливаем время одобрения
         approved_by_id=current_user.id  # Одобрено самим пользователем
     )
 
@@ -1086,7 +1154,7 @@ async def create_anonymous_review(
             )
 
         review_dict = review_data.dict()
-        # ИСПРАВЛЕНО: Анонимные отзывы требуют модерации
+        # Анонимные отзывы требуют модерации
         review_dict['is_approved'] = False  # Анонимные отзывы требуют одобрения
 
         review = models.Review(**review_dict)
@@ -1104,20 +1172,18 @@ async def create_anonymous_review(
 @router.patch("/reviews/{review_id}/approve", response_model=schemas.Review)
 async def approve_review(
         review_id: int,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Схвалити відгук (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     review = db.query(models.Review).filter(models.Review.id == review_id).first()
     if not review:
         raise HTTPException(status_code=404, detail="Review not found")
 
     review.is_approved = True
-    review.approved_at = func.now()
+    review.approved_at = datetime.utcnow()
     review.approved_by_id = current_user.id
-    review.updated_at = func.now()
+    review.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(review)
 
@@ -1133,12 +1199,10 @@ async def approve_review(
 @router.patch("/reviews/{review_id}/reject", response_model=schemas.Message)
 async def reject_review(
         review_id: int,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Відхилити відгук (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     review = db.query(models.Review).filter(models.Review.id == review_id).first()
     if not review:
         raise HTTPException(status_code=404, detail="Review not found")
@@ -1154,12 +1218,10 @@ async def reject_review(
 async def update_review(
         review_id: int,
         review_data: schemas.ReviewUpdate,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Оновити відгук (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     review = db.query(models.Review).filter(models.Review.id == review_id).first()
     if not review:
         raise HTTPException(status_code=404, detail="Review not found")
@@ -1168,7 +1230,7 @@ async def update_review(
     for field, value in update_data.items():
         setattr(review, field, value)
 
-    review.updated_at = func.now()
+    review.updated_at = datetime.utcnow()
     db.commit()
 
     # Завантажуємо з користувачем
@@ -1183,12 +1245,10 @@ async def update_review(
 @router.delete("/reviews/{review_id}", response_model=schemas.Message)
 async def delete_review(
         review_id: int,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Видалити відгук (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     review = db.query(models.Review).filter(models.Review.id == review_id).first()
     if not review:
         raise HTTPException(status_code=404, detail="Review not found")
@@ -1220,12 +1280,10 @@ async def get_faq(
 @router.post("/faq", response_model=schemas.FAQ)
 async def create_faq(
         faq_data: schemas.FAQCreate,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Створити нове FAQ (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     faq = models.FAQ(**faq_data.dict())
     db.add(faq)
     db.commit()
@@ -1239,12 +1297,10 @@ async def create_faq(
 async def update_faq(
         faq_id: int,
         faq_data: schemas.FAQUpdate,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Оновити FAQ (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     faq = db.query(models.FAQ).filter(models.FAQ.id == faq_id).first()
     if not faq:
         raise HTTPException(status_code=404, detail="FAQ not found")
@@ -1253,7 +1309,7 @@ async def update_faq(
     for field, value in update_data.items():
         setattr(faq, field, value)
 
-    faq.updated_at = func.now()
+    faq.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(faq)
 
@@ -1264,12 +1320,10 @@ async def update_faq(
 @router.delete("/faq/{faq_id}", response_model=schemas.Message)
 async def delete_faq(
         faq_id: int,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Видалити FAQ (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     faq = db.query(models.FAQ).filter(models.FAQ.id == faq_id).first()
     if not faq:
         raise HTTPException(status_code=404, detail="FAQ not found")
@@ -1281,7 +1335,7 @@ async def delete_faq(
     return {"message": "FAQ deleted successfully"}
 
 
-# ============ ЗАЯВКИ (ИСПРАВЛЕНО) ============
+# ============ ЗАЯВКИ ============
 
 @router.post("/applications/quote", response_model=schemas.QuoteApplication)
 async def create_quote_application(
@@ -1293,7 +1347,7 @@ async def create_quote_application(
     try:
         package = None
 
-        # ИСПРАВЛЕНО: Улучшена проверка пакета
+        # Улучшена проверка пакета
         if application_data.package_id:
             package = db.query(models.Package).filter(
                 models.Package.id == application_data.package_id
@@ -1301,12 +1355,12 @@ async def create_quote_application(
 
             if not package:
                 logger.warning(f"Package not found: {application_data.package_id}")
-                # ИСПРАВЛЕНО: Более мягкая обработка ошибки - создаем заявку без пакета
+                # Более мягкая обработка ошибки - создаем заявку без пакета
                 application_data.package_id = None
                 logger.info(f"Creating quote application without package for {application_data.email}")
             elif not package.is_active:
                 logger.warning(f"Package is inactive: {application_data.package_id}")
-                # ИСПРАВЛЕНО: Если пакет неактивен, создаем заявку без пакета
+                # Если пакет неактивен, создаем заявку без пакета
                 application_data.package_id = None
                 logger.info(f"Creating quote application without inactive package for {application_data.email}")
 
@@ -1360,16 +1414,14 @@ async def create_consultation_application(
 
 @router.get("/applications/quote", response_model=List[schemas.QuoteApplication])
 async def get_quote_applications(
-        request: Request,
         status: Optional[str] = None,
         search: Optional[str] = None,
         skip: int = Query(0, ge=0),
         limit: int = Query(50, ge=1, le=100),
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Отримати заявки на прорахунок (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     query = db.query(models.QuoteApplication).options(
         joinedload(models.QuoteApplication.package)
     )
@@ -1392,16 +1444,14 @@ async def get_quote_applications(
 
 @router.get("/applications/consultation", response_model=List[schemas.ConsultationApplication])
 async def get_consultation_applications(
-        request: Request,
         status: Optional[str] = None,
         search: Optional[str] = None,
         skip: int = Query(0, ge=0),
         limit: int = Query(50, ge=1, le=100),
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Отримати заявки на консультацію (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     query = db.query(models.ConsultationApplication)
 
     if status:
@@ -1423,12 +1473,10 @@ async def get_consultation_applications(
 @router.get("/applications/quote/{application_id}", response_model=schemas.QuoteApplication)
 async def get_quote_application(
         application_id: int,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Отримати заявку на прорахунок за ID (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     application = db.query(models.QuoteApplication).options(
         joinedload(models.QuoteApplication.package)
     ).filter(models.QuoteApplication.id == application_id).first()
@@ -1443,12 +1491,10 @@ async def get_quote_application(
 async def update_quote_application(
         application_id: int,
         application_data: schemas.QuoteApplicationUpdate,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Оновити статус заявки на прорахунок (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     application = db.query(models.QuoteApplication).filter(
         models.QuoteApplication.id == application_id
     ).first()
@@ -1462,9 +1508,9 @@ async def update_quote_application(
         application.response_text = application_data.response_text
 
     if old_status != application_data.status.value:
-        application.processed_at = func.now()
+        application.processed_at = datetime.utcnow()
 
-    application.updated_at = func.now()
+    application.updated_at = datetime.utcnow()
     db.commit()
 
     # Завантажуємо з пакетом
@@ -1480,12 +1526,10 @@ async def update_quote_application(
 async def update_consultation_application(
         application_id: int,
         application_data: schemas.ConsultationApplicationUpdate,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Оновити статус заявки на консультацію (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     application = db.query(models.ConsultationApplication).filter(
         models.ConsultationApplication.id == application_id
     ).first()
@@ -1499,7 +1543,7 @@ async def update_consultation_application(
         else:
             setattr(application, field, value)
 
-    application.updated_at = func.now()
+    application.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(application)
 
@@ -1510,12 +1554,10 @@ async def update_consultation_application(
 @router.delete("/applications/quote/{application_id}", response_model=schemas.Message)
 async def delete_quote_application(
         application_id: int,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Видалити заявку на прорахунок (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     application = db.query(models.QuoteApplication).filter(
         models.QuoteApplication.id == application_id
     ).first()
@@ -1532,12 +1574,10 @@ async def delete_quote_application(
 @router.delete("/applications/consultation/{application_id}", response_model=schemas.Message)
 async def delete_consultation_application(
         application_id: int,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Видалити заявку на консультацію (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     application = db.query(models.ConsultationApplication).filter(
         models.ConsultationApplication.id == application_id
     ).first()
@@ -1549,6 +1589,101 @@ async def delete_consultation_application(
 
     logger.info(f"Consultation application deleted: {application_id} by {current_user.email}")
     return {"message": "Application deleted successfully"}
+
+
+# ============ УНИВЕРСАЛЬНЫЕ АДМИНСКИЕ УТИЛИТЫ ============
+
+def check_database_connection() -> bool:
+    """Проверить соединение с базой данных."""
+    try:
+        from database import engine
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True
+    except Exception:
+        return False
+
+
+@router.post("/admin/flush-cache", response_model=schemas.Message)
+async def flush_admin_cache(
+        current_user: models.User = Depends(get_current_admin_user),
+        db: Session = Depends(get_db)
+):
+    """Очистить кеш админки."""
+    try:
+        # Очищаем сессии пользователей
+        from auth import user_sessions
+        user_sessions.clear()
+
+        logger.info(f"Admin cache flushed by {current_user.email}")
+        return {"message": "Cache flushed successfully"}
+    except Exception as e:
+        logger.error(f"Error flushing cache: {e}")
+        raise HTTPException(status_code=500, detail="Failed to flush cache")
+
+
+@router.get("/admin/debug-info", response_model=Dict[str, Any])
+async def get_admin_debug_info(
+        current_user: models.User = Depends(get_current_admin_user),
+        db: Session = Depends(get_db)
+):
+    """Получить отладочную информацию для админки."""
+    try:
+        info = {
+            "database_connection": check_database_connection(),
+            "total_queries_count": db.query(models.Design).count() + db.query(models.Package).count(),
+            "contact_info_exists": db.query(models.ContactInfo).first() is not None,
+            "categories_count": db.query(models.DesignCategory).count(),
+            "admin_user": {
+                "id": current_user.id,
+                "email": current_user.email,
+                "is_admin": current_user.is_admin
+            }
+        }
+        return info
+    except Exception as e:
+        logger.error(f"Error getting debug info: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get debug info")
+
+
+@router.patch("/admin/fix-database", response_model=schemas.Message)
+async def fix_database_issues(
+        current_user: models.User = Depends(get_current_admin_user),
+        db: Session = Depends(get_db)
+):
+    """Исправить проблемы с базой данных."""
+    try:
+        fixes_applied = []
+
+        # Проверяем и создаем контактную информацию если не существует
+        if not db.query(models.ContactInfo).first():
+            contact_info = models.ContactInfo()
+            db.add(contact_info)
+            fixes_applied.append("Created empty contact_info record")
+
+        # Проверяем существование базовых категорий
+        basic_categories = ["all", "corporate", "e-commerce"]
+        for cat_id in basic_categories:
+            if not db.query(models.DesignCategory).filter(models.DesignCategory.id == cat_id).first():
+                if cat_id == "all":
+                    category = models.DesignCategory(
+                        id="all",
+                        slug="all",
+                        name_uk="Всі проекти",
+                        name_en="All Projects"
+                    )
+                    db.add(category)
+                    fixes_applied.append(f"Created category: {cat_id}")
+
+        db.commit()
+
+        logger.info(f"Database fixes applied by {current_user.email}: {fixes_applied}")
+        return {"message": f"Applied {len(fixes_applied)} fixes: {', '.join(fixes_applied)}"}
+
+    except Exception as e:
+        logger.error(f"Error fixing database: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to fix database issues")
 
 
 # ============ КОНТЕНТ ============
@@ -1583,12 +1718,10 @@ async def get_content_by_key(key: str, db: Session = Depends(get_db)):
 @router.post("/content", response_model=schemas.Content)
 async def create_content(
         content_data: schemas.ContentCreate,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Створити новий контент (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     # Перевіряємо чи вже існує контент з таким ключем
     existing = db.query(models.Content).filter(models.Content.key == content_data.key).first()
     if existing:
@@ -1607,12 +1740,10 @@ async def create_content(
 async def update_content(
         key: str,
         content_data: schemas.ContentUpdate,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Оновити контент (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     content = db.query(models.Content).filter(models.Content.key == key).first()
     if not content:
         # Створюємо новий контент якщо не існує
@@ -1629,7 +1760,7 @@ async def update_content(
         update_data = content_data.dict(exclude_unset=True)
         for field, value in update_data.items():
             setattr(content, field, value)
-        content.updated_at = func.now()
+        content.updated_at = datetime.utcnow()
         logger.info(f"Content updated: {key} by {current_user.email}")
 
     db.commit()
@@ -1640,12 +1771,10 @@ async def update_content(
 @router.delete("/content/{key}", response_model=schemas.Message)
 async def delete_content(
         key: str,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Видалити контент (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     content = db.query(models.Content).filter(models.Content.key == key).first()
     if not content:
         raise HTTPException(status_code=404, detail="Content not found")
@@ -1657,45 +1786,71 @@ async def delete_content(
     return {"message": "Content deleted successfully"}
 
 
-# ============ КОНТАКТНА ІНФОРМАЦІЯ ============
+# ============ КОНТАКТНА ІНФОРМАЦІЯ (КРИТИЧНО ИСПРАВЛЕНО) ============
 
 @router.get("/contact-info", response_model=schemas.ContactInfo)
 async def get_contact_info(db: Session = Depends(get_db)):
     """Отримати контактну інформацію."""
-    contact_info = db.query(models.ContactInfo).first()
-    if not contact_info:
-        # Створюємо порожній запис якщо не існує
-        contact_info = models.ContactInfo()
-        db.add(contact_info)
-        db.commit()
-        db.refresh(contact_info)
-    return contact_info
+    try:
+        contact_info = db.query(models.ContactInfo).first()
+        if not contact_info:
+            # Створюємо порожній запис якщо не існує
+            contact_info = models.ContactInfo()
+            db.add(contact_info)
+            db.commit()
+            db.refresh(contact_info)
+            logger.info("Created empty contact info record")
+        return contact_info
+    except Exception as e:
+        logger.error(f"Error fetching contact info: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch contact info")
 
 
 @router.put("/contact-info", response_model=schemas.ContactInfo)
 async def update_contact_info(
         contact_data: schemas.ContactInfoUpdate,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
-    """Оновити контактну інформацію (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
+    """Оновити контактну інформацію (тільки адмін) - КРИТИЧНО ИСПРАВЛЕНО."""
+    try:
+        contact_info = db.query(models.ContactInfo).first()
 
-    contact_info = db.query(models.ContactInfo).first()
-    if not contact_info:
-        contact_info = models.ContactInfo(**contact_data.dict(exclude_unset=True))
-        db.add(contact_info)
-    else:
-        update_data = contact_data.dict(exclude_unset=True)
-        for field, value in update_data.items():
-            setattr(contact_info, field, value)
-        contact_info.updated_at = func.now()
+        if not contact_info:
+            # Создаем новую запись если не существует
+            contact_data_dict = contact_data.dict(exclude_unset=True, exclude_none=True)
+            contact_info = models.ContactInfo(**contact_data_dict)
+            db.add(contact_info)
+            logger.info(f"Contact info created by {current_user.email}")
+        else:
+            # ИСПРАВЛЕНИЕ: Принудительно обновляем каждое поле
+            update_data = contact_data.dict(exclude_unset=True, exclude_none=True)
 
-    db.commit()
-    db.refresh(contact_info)
+            for field, value in update_data.items():
+                if hasattr(contact_info, field):
+                    setattr(contact_info, field, value)
+                    logger.debug(f"Updated field {field} = {value}")
+                else:
+                    logger.warning(f"Field {field} not found in ContactInfo model")
 
-    logger.info(f"Contact info updated by {current_user.email}")
-    return contact_info
+            contact_info.updated_at = datetime.utcnow()
+            logger.info(f"Contact info updated by {current_user.email}")
+
+        # КРИТИЧНО: Принудительно сохраняем изменения
+        db.flush()  # Применяем изменения к объекту
+        db.commit()  # Сохраняем в БД
+        db.refresh(contact_info)  # Обновляем объект из БД
+
+        # Проверяем что данные действительно сохранились
+        saved_contact_info = db.query(models.ContactInfo).first()
+        logger.info(f"✅ Contact info saved: phone={saved_contact_info.phone}, email={saved_contact_info.email}")
+
+        return saved_contact_info
+
+    except Exception as e:
+        logger.error(f"❌ Error updating contact info: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to update contact info: {str(e)}")
 
 
 # ============ SEO НАЛАШТУВАННЯ ============
@@ -1723,12 +1878,10 @@ async def get_seo_by_page(page: str, db: Session = Depends(get_db)):
 @router.post("/seo", response_model=schemas.SEOSettings)
 async def create_seo_settings(
         seo_data: schemas.SEOSettingsCreate,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Створити SEO налаштування (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     existing = db.query(models.SEOSettings).filter(models.SEOSettings.page == seo_data.page).first()
     if existing:
         raise HTTPException(status_code=400, detail="SEO settings for this page already exist")
@@ -1746,12 +1899,10 @@ async def create_seo_settings(
 async def update_seo_settings(
         page: str,
         seo_data: schemas.SEOSettingsUpdate,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Оновити SEO налаштування (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     seo = db.query(models.SEOSettings).filter(models.SEOSettings.page == page).first()
     if not seo:
         seo_dict = seo_data.dict(exclude_unset=True)
@@ -1763,7 +1914,7 @@ async def update_seo_settings(
         update_data = seo_data.dict(exclude_unset=True)
         for field, value in update_data.items():
             setattr(seo, field, value)
-        seo.updated_at = func.now()
+        seo.updated_at = datetime.utcnow()
         logger.info(f"SEO settings updated for page: {page} by {current_user.email}")
 
     db.commit()
@@ -1807,12 +1958,10 @@ async def get_policy(policy_type: str, db: Session = Depends(get_db)):
 @router.post("/policies", response_model=schemas.Policy)
 async def create_policy(
         policy_data: schemas.PolicyCreate,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Створити політику (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     existing = db.query(models.Policy).filter(models.Policy.type == policy_data.type).first()
     if existing:
         raise HTTPException(status_code=400, detail="Policy of this type already exists")
@@ -1830,12 +1979,10 @@ async def create_policy(
 async def update_policy(
         policy_type: str,
         policy_data: schemas.PolicyUpdate,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Оновити політику (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     policy = db.query(models.Policy).filter(models.Policy.type == policy_type).first()
     if not policy:
         policy_dict = policy_data.dict(exclude_unset=True)
@@ -1847,7 +1994,7 @@ async def update_policy(
         update_data = policy_data.dict(exclude_unset=True)
         for field, value in update_data.items():
             setattr(policy, field, value)
-        policy.updated_at = func.now()
+        policy.updated_at = datetime.utcnow()
         logger.info(f"Policy updated: {policy_type} by {current_user.email}")
 
     db.commit()
@@ -1861,12 +2008,10 @@ async def update_policy(
 async def upload_file(
         file: UploadFile = File(...),
         alt_text: Optional[str] = Form(None),
-        request: Request = None,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Завантажити файл (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     # Перевіряємо розмір файлу
     if hasattr(file, 'size') and file.size and file.size > settings.MAX_FILE_SIZE:
         raise HTTPException(
@@ -1920,12 +2065,10 @@ async def get_uploaded_files(
         used_only: Optional[bool] = None,
         skip: int = Query(0, ge=0),
         limit: int = Query(50, ge=1, le=100),
-        request: Request = None,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Отримати список завантажених файлів (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     query = db.query(models.UploadedFile)
 
     if category:
@@ -1942,12 +2085,10 @@ async def get_uploaded_files(
 async def update_uploaded_file(
         file_id: int,
         file_data: schemas.UploadedFileUpdate,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Оновити метаданні файлу (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     file_record = db.query(models.UploadedFile).filter(models.UploadedFile.id == file_id).first()
     if not file_record:
         raise HTTPException(status_code=404, detail="File not found")
@@ -1966,12 +2107,10 @@ async def update_uploaded_file(
 @router.delete("/files/{file_id}", response_model=schemas.Message)
 async def delete_uploaded_file(
         file_id: int,
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Видалити завантажений файл (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     file_record = db.query(models.UploadedFile).filter(models.UploadedFile.id == file_id).first()
     if not file_record:
         raise HTTPException(status_code=404, detail="File not found")
@@ -1995,12 +2134,10 @@ async def delete_uploaded_file(
 
 @router.get("/admin/stats", response_model=schemas.DashboardStats)
 async def get_dashboard_stats(
-        request: Request,
+        current_user: models.User = Depends(get_current_admin_user),
         db: Session = Depends(get_db)
 ):
     """Отримати статистику для дашборду (тільки адмін)."""
-    current_user = get_current_admin_user(get_current_user(request, None, db))
-
     try:
         # Основна статистика
         total_quote_apps = db.query(models.QuoteApplication).count()

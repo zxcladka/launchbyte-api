@@ -36,7 +36,16 @@ try:
         cleanup_old_data
     )
     from routes import router
-    from email_service import email_service, validate_email_templates
+
+    try:
+        from email_service import email_service, validate_email_templates
+    except ImportError:
+        # ИСПРАВЛЕНИЕ: Обработка случая когда email_service не существует
+        email_service = None
+        validate_email_templates = lambda: {}
+        logger = logging.getLogger(__name__)
+        logger.warning("Email service not available - continuing without email functionality")
+
     from utils import get_upload_stats, calculate_storage_usage, clean_old_files
 except ImportError as e:
     print(f"❌ Import error: {e}")
@@ -246,7 +255,7 @@ async def lifespan(app: FastAPI):
 
         # Тестируем email сервис если настроен
         logger.info("📧 Testing email service...")
-        if hasattr(settings, 'SMTP_SERVER') and settings.SMTP_SERVER:
+        if email_service and hasattr(settings, 'SMTP_SERVER') and settings.SMTP_SERVER:
             try:
                 email_connection_ok = await email_service.test_email_connection()
                 if email_connection_ok:
@@ -261,10 +270,13 @@ async def lifespan(app: FastAPI):
 
         # Валидируем email шаблоны
         logger.info("📝 Validating email templates...")
-        template_validation = validate_email_templates()
-        invalid_templates = [name for name, result in template_validation.items() if not result['valid']]
-        if invalid_templates:
-            logger.warning(f"⚠️ Invalid email templates: {invalid_templates}")
+        try:
+            template_validation = validate_email_templates()
+            invalid_templates = [name for name, result in template_validation.items() if not result.get('valid', False)]
+            if invalid_templates:
+                logger.warning(f"⚠️ Invalid email templates: {invalid_templates}")
+        except Exception as e:
+            logger.warning(f"⚠️ Email template validation error: {e}")
 
         # Проверяем директории для файлов
         logger.info("📁 Checking upload directories...")
@@ -278,16 +290,22 @@ async def lifespan(app: FastAPI):
 
         # Статистика базы данных
         logger.info("📈 Gathering database statistics...")
-        db_stats = get_database_stats()
-        logger.info(f"📊 Database stats: {db_stats.get('users', 0)} users, "
-                    f"{db_stats.get('designs', 0)} designs, "
-                    f"{db_stats.get('team_members', 0)} team members, "
-                    f"{db_stats.get('about_content', 0)} about content entries")
+        try:
+            db_stats = get_database_stats()
+            logger.info(f"📊 Database stats: {db_stats.get('users', 0)} users, "
+                        f"{db_stats.get('designs', 0)} designs, "
+                        f"{db_stats.get('team_members', 0)} team members, "
+                        f"{db_stats.get('about_content', 0)} about content entries")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not get database stats: {e}")
 
         # Статистика файлов
-        upload_stats = get_upload_stats()
-        logger.info(f"📁 Upload stats: {upload_stats.get('total_files', 0)} files, "
-                    f"{upload_stats.get('total_size_human', '0 B')}")
+        try:
+            upload_stats = get_upload_stats()
+            logger.info(f"📁 Upload stats: {upload_stats.get('total_files', 0)} files, "
+                        f"{upload_stats.get('total_size_human', '0 B')}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not get upload stats: {e}")
 
         # Запускаем фоновые задачи
         logger.info("⚙️  Starting background tasks...")
@@ -337,18 +355,24 @@ async def background_cleanup_task():
             logger.info("🧹 Running background cleanup...")
 
             # Очищаем старые логи email
-            cleanup_result = cleanup_old_data(days_old=30)
-            if cleanup_result.get('deleted_email_logs', 0) > 0:
-                logger.info(f"🗑️  Cleaned up {cleanup_result['deleted_email_logs']} old email logs")
+            try:
+                cleanup_result = cleanup_old_data(days_old=30)
+                if cleanup_result.get('deleted_email_logs', 0) > 0:
+                    logger.info(f"🗑️  Cleaned up {cleanup_result['deleted_email_logs']} old email logs")
+            except Exception as e:
+                logger.error(f"❌ Failed to cleanup old data: {e}")
 
             # Очищаем старые временные файлы
-            temp_cleanup = clean_old_files(
-                str(Path(settings.UPLOAD_DIR) / 'temp'),
-                days_old=1,
-                dry_run=False
-            )
-            if temp_cleanup.get('removed_count', 0) > 0:
-                logger.info(f"🗑️  Cleaned up {temp_cleanup['removed_count']} old temp files")
+            try:
+                temp_cleanup = clean_old_files(
+                    str(Path(settings.UPLOAD_DIR) / 'temp'),
+                    days_old=1,
+                    dry_run=False
+                )
+                if temp_cleanup.get('removed_count', 0) > 0:
+                    logger.info(f"🗑️  Cleaned up {temp_cleanup['removed_count']} old temp files")
+            except Exception as e:
+                logger.error(f"❌ Failed to cleanup temp files: {e}")
 
         except Exception as e:
             logger.error(f"❌ Background cleanup error: {e}")
@@ -443,10 +467,11 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Trusted hosts (в продакшн)
 if settings.ENVIRONMENT == "production":
-    trusted_hosts = getattr(settings, 'TRUSTED_HOSTS', ["webcraft.pro", "*.webcraft.pro"])
+    trusted_hosts = getattr(settings, 'TRUSTED_HOSTS',
+                            ["webcraft.pro", "*.webcraft.pro", "launchbyte.org", "*.launchbyte.org"])
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts)
 
-# 🔧 CORS MIDDLEWARE - ИСПРАВЛЕНО ДЛЯ LAUNCHBYTE.ORG
+# 🔧 CORS MIDDLEWARE - ИСПРАВЛЕНО ДЛЯ КРОСС-ДОМЕННОЙ РАБОТЫ
 logger.info(f"🌐 Configuring CORS for origins: {settings.ALLOWED_ORIGINS}")
 app.add_middleware(
     CORSMiddleware,
@@ -461,9 +486,12 @@ app.add_middleware(
         "Authorization",
         "X-Requested-With",
         "X-Request-ID",
-        "Cache-Control"
+        "Cache-Control",
+        "Origin",
+        "Access-Control-Allow-Origin",
+        "Access-Control-Allow-Credentials"
     ],
-    expose_headers=["X-Request-ID", "X-API-Version"],
+    expose_headers=["X-Request-ID", "X-API-Version", "Set-Cookie"],
     max_age=600  # Кэшируем preflight запросы на 10 минут
 )
 
@@ -571,9 +599,20 @@ async def root():
     db_status = "connected" if check_database_connection() else "disconnected"
 
     # Получаем расширенную статистику
-    db_stats = get_database_stats() if db_status == "connected" else {}
-    upload_stats = get_upload_stats()
-    storage_usage = calculate_storage_usage()
+    try:
+        db_stats = get_database_stats() if db_status == "connected" else {}
+    except:
+        db_stats = {}
+
+    try:
+        upload_stats = get_upload_stats()
+    except:
+        upload_stats = {}
+
+    try:
+        storage_usage = calculate_storage_usage()
+    except:
+        storage_usage = {}
 
     return {
         "service": "🎨 WebCraft Pro API",
@@ -605,7 +644,7 @@ async def root():
             "authentication": "JWT with cookies",
             "database": "MySQL with migrations",
             "file_upload": "Images with optimization",
-            "email": "SMTP notifications",
+            "email": "SMTP notifications" if email_service else "Not configured",
             "localization": "Ukrainian/English",
             "admin_panel": "Full CRUD operations",
             "team_management": "Team members CRUD",  # Новая функция
@@ -640,7 +679,7 @@ async def health_check():
 
     # Проверяем email сервис
     try:
-        if hasattr(settings, 'SMTP_SERVER') and settings.SMTP_SERVER:
+        if email_service and hasattr(settings, 'SMTP_SERVER') and settings.SMTP_SERVER:
             email_test = await email_service.test_email_connection()
             checks["email"] = {
                 "status": "ok" if email_test else "error",
@@ -817,7 +856,8 @@ async def get_api_info():
         "features": {
             "authentication": True,
             "file_upload": True,
-            "email_notifications": hasattr(settings, 'SMTP_SERVER') and bool(settings.SMTP_SERVER),
+            "email_notifications": email_service is not None and hasattr(settings, 'SMTP_SERVER') and bool(
+                settings.SMTP_SERVER),
             "rate_limiting": True,
             "cors": True,
             "team_management": True,  # Новая функция
@@ -849,7 +889,7 @@ async def test_email_endpoint():
     if not settings.DEBUG:
         raise HTTPException(status_code=404, detail="Not found")
 
-    if not hasattr(settings, 'SMTP_SERVER') or not settings.SMTP_SERVER:
+    if not email_service or not hasattr(settings, 'SMTP_SERVER') or not settings.SMTP_SERVER:
         raise HTTPException(status_code=503, detail="Email service not configured")
 
     try:

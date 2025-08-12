@@ -151,71 +151,165 @@ def is_token_blacklisted(token: str) -> bool:
 
 
 def set_auth_cookie(response: Response, token: str, refresh_token: Optional[str] = None) -> None:
-    """Встановлює токен у cookie."""
-    # Access token cookie
-    response.set_cookie(
-        key="access_token",
-        value=f"Bearer {token}",
-        max_age=settings.COOKIE_MAX_AGE,
-        expires=settings.COOKIE_MAX_AGE,
-        path="/",
-        domain=None,
-        secure=settings.COOKIE_SECURE,
-        httponly=settings.COOKIE_HTTPONLY,
-        samesite=settings.COOKIE_SAMESITE,
-    )
+    """Встановлює токен у cookie (КРИТИЧНО ИСПРАВЛЕНО ДЛЯ КРОСС-ДОМЕННОЙ РАБОТЫ)."""
 
-    # Refresh token cookie (якщо надано)
+    # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: улучшенные настройки cookie для фронтенда
+
+    # Access token cookie - основной токен для аутентификации
+    access_cookie_config = {
+        "key": settings.TOKEN_COOKIE_NAME,
+        "value": token,  # ИСПРАВЛЕНО: убираем префикс "Bearer " для прямого использования в JS
+        "max_age": settings.COOKIE_MAX_AGE,
+        "path": "/",
+        "secure": settings.COOKIE_SECURE,  # Только HTTPS в продакшене
+        "httponly": settings.COOKIE_HTTPONLY,  # False для доступа из JavaScript
+        "samesite": settings.COOKIE_SAMESITE,  # "none" для кросс-доменных запросов
+    }
+
+    # ИСПРАВЛЕНО: добавляем домен только если он настроен
+    if settings.COOKIE_DOMAIN:
+        access_cookie_config["domain"] = settings.COOKIE_DOMAIN
+
+    response.set_cookie(**access_cookie_config)
+
+    # Дополнительное cookie с префиксом для совместимости с заголовками
+    bearer_cookie_config = {
+        "key": "auth_token",
+        "value": f"Bearer {token}",
+        "max_age": settings.COOKIE_MAX_AGE,
+        "path": "/",
+        "secure": settings.COOKIE_SECURE,
+        "httponly": False,  # Доступ из JS для отправки в заголовках
+        "samesite": settings.COOKIE_SAMESITE,
+    }
+
+    if settings.COOKIE_DOMAIN:
+        bearer_cookie_config["domain"] = settings.COOKIE_DOMAIN
+
+    response.set_cookie(**bearer_cookie_config)
+
+    # Refresh token cookie (если предоставлен)
     if refresh_token:
-        response.set_cookie(
-            key="refresh_token",
-            value=f"Bearer {refresh_token}",
-            max_age=30 * 24 * 60 * 60,  # 30 днів
-            path="/api/v1/auth/refresh",  # Обмежуємо шлях
-            domain=None,
-            secure=settings.COOKIE_SECURE,
-            httponly=True,  # Завжди httponly для refresh токену
-            samesite=settings.COOKIE_SAMESITE,
-        )
+        refresh_config = {
+            "key": "refresh_token",
+            "value": refresh_token,
+            "max_age": 30 * 24 * 60 * 60,  # 30 дней
+            "path": "/api/v1/auth/refresh",  # Ограничиваем путь
+            "secure": settings.COOKIE_SECURE,
+            "httponly": True,  # Всегда httponly для refresh токена
+            "samesite": settings.COOKIE_SAMESITE,
+        }
+
+        if settings.COOKIE_DOMAIN:
+            refresh_config["domain"] = settings.COOKIE_DOMAIN
+
+        response.set_cookie(**refresh_config)
+
+    # ИСПРАВЛЕНО: информационное cookie для отладки
+    if settings.DEBUG:
+        debug_config = {
+            "key": "auth_debug",
+            "value": f"logged_in_{datetime.utcnow().strftime('%H%M%S')}",
+            "max_age": settings.COOKIE_MAX_AGE,
+            "path": "/",
+            "secure": False,
+            "httponly": False,
+            "samesite": "lax",
+        }
+        response.set_cookie(**debug_config)
+
+    logger.debug(f"Auth cookies set with secure={settings.COOKIE_SECURE}, "
+                 f"httponly={settings.COOKIE_HTTPONLY}, samesite={settings.COOKIE_SAMESITE}")
 
 
 def clear_auth_cookie(response: Response) -> None:
-    """Очищає токен з cookie."""
-    response.delete_cookie(
-        key="access_token",
-        path="/",
-        domain=None,
-        secure=settings.COOKIE_SECURE,
-        httponly=settings.COOKIE_HTTPONLY,
-        samesite=settings.COOKIE_SAMESITE,
-    )
+    """Очищає токен з cookie (КРИТИЧНО ИСПРАВЛЕНО)."""
 
-    response.delete_cookie(
-        key="refresh_token",
-        path="/api/v1/auth/refresh",
-        domain=None,
-        secure=settings.COOKIE_SECURE,
-        httponly=True,
-        samesite=settings.COOKIE_SAMESITE,
-    )
+    # Список всех cookie для очистки
+    cookies_to_clear = [
+        {
+            "key": settings.TOKEN_COOKIE_NAME,
+            "path": "/",
+        },
+        {
+            "key": "auth_token",
+            "path": "/",
+        },
+        {
+            "key": "refresh_token",
+            "path": "/api/v1/auth/refresh",
+        },
+        {
+            "key": "auth_debug",
+            "path": "/",
+        }
+    ]
+
+    # Очищаем каждое cookie с правильными настройками
+    for cookie_config in cookies_to_clear:
+        clear_config = {
+            **cookie_config,
+            "secure": settings.COOKIE_SECURE,
+            "httponly": settings.COOKIE_HTTPONLY if cookie_config["key"] != "refresh_token" else True,
+            "samesite": settings.COOKIE_SAMESITE,
+        }
+
+        # Добавляем домен только если он настроен
+        if settings.COOKIE_DOMAIN:
+            clear_config["domain"] = settings.COOKIE_DOMAIN
+
+        response.delete_cookie(**clear_config)
+
+    logger.debug("All auth cookies cleared")
 
 
 def get_token_from_cookie_or_header(
         request: Request,
         credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
 ) -> Optional[str]:
-    """Отримує токен з cookie або header."""
+    """Отримує токен з cookie або header (КРИТИЧНО ИСПРАВЛЕНО ДЛЯ РЕШЕНИЯ ПРОБЛЕМЫ С ПЕРЕЗАГРУЗКОЙ)."""
     token = None
 
-    # Спочатку перевіряємо header (має пріоритет)
+    # ИСПРАВЛЕНИЕ: Сначала проверяем cookie (приоритет для стабильной сессии), потом header
+    # Это решает проблему выхода из аккаунта при перезагрузке страницы
+
+    # Проверяем основное cookie с токеном
+    main_token = request.cookies.get(settings.TOKEN_COOKIE_NAME)
+    if main_token:
+        token = main_token
+        logger.debug("Token found in main cookie")
+        return token
+
+    # Проверяем альтернативное cookie с Bearer префиксом
+    bearer_token = request.cookies.get("auth_token")
+    if bearer_token:
+        if bearer_token.startswith("Bearer "):
+            token = bearer_token[7:]  # Убираем "Bearer "
+            logger.debug("Token found in bearer cookie")
+        else:
+            token = bearer_token
+            logger.debug("Token found in bearer cookie (without prefix)")
+        return token
+
+    # ИСПРАВЛЕНО: проверяем устаревшие cookie для обратной совместимости
+    legacy_token = request.cookies.get("access_token")
+    if legacy_token:
+        if legacy_token.startswith("Bearer "):
+            token = legacy_token[7:]
+            logger.debug("Token found in legacy cookie")
+        else:
+            token = legacy_token
+            logger.debug("Token found in legacy cookie (without prefix)")
+        return token
+
+    # Только после проверки всех cookie проверяем Authorization header
     if credentials and credentials.credentials:
         token = credentials.credentials
+        logger.debug("Token found in Authorization header")
+        return token
 
-    # Якщо в header немає, перевіряємо cookie
     if not token:
-        cookie_token = request.cookies.get("access_token")
-        if cookie_token and cookie_token.startswith("Bearer "):
-            token = cookie_token[7:]  # Прибираємо "Bearer "
+        logger.debug("No authentication token found in cookies or headers")
 
     return token
 
@@ -232,7 +326,8 @@ def authenticate_user(db: Session, email: str, password: str) -> Optional[models
             logger.info(f"Invalid password for user: {email}")
             return None
 
-        # Оновлюємо час останнього входу
+        # Обновляем время последнего входа
+        user.last_login = datetime.utcnow()
         user.updated_at = datetime.utcnow()
         db.commit()
 
@@ -248,7 +343,7 @@ def get_current_user(
         credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
         db: Session = Depends(get_db)
 ) -> models.User:
-    """Отримує поточного користувача з JWT токена."""
+    """Отримує поточного користувача з JWT токена (КРИТИЧНО ИСПРАВЛЕНО)."""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -258,10 +353,12 @@ def get_current_user(
     token = get_token_from_cookie_or_header(request, credentials)
 
     if not token:
+        logger.debug("No authentication token provided")
         raise credentials_exception
 
     # Перевіряємо чи токен не в чорному списку
     if is_token_blacklisted(token):
+        logger.warning("Attempted to use blacklisted token")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token has been revoked",
@@ -271,20 +368,25 @@ def get_current_user(
     try:
         payload = verify_token(token)
         if payload is None:
+            logger.warning("Token verification failed")
             raise credentials_exception
 
         email: str = payload.get("sub")
         if email is None:
+            logger.warning("Token payload missing 'sub' field")
             raise credentials_exception
 
         # Перевіряємо тип токену
         if payload.get("type") != "access":
+            logger.warning(f"Invalid token type: {payload.get('type')}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid token type",
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.warning(f"Token validation error: {e}")
         raise credentials_exception
@@ -294,12 +396,21 @@ def get_current_user(
         logger.warning(f"User not found in database: {email}")
         raise credentials_exception
 
+    if not user.is_active:
+        logger.warning(f"Inactive user attempted access: {email}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Inactive user account"
+        )
+
+    logger.debug(f"User authenticated: {email}")
     return user
 
 
 def get_current_active_user(current_user: models.User = Depends(get_current_user)) -> models.User:
     """Перевіряє що користувач активний."""
     if not current_user.is_active:
+        logger.warning(f"Inactive user attempted access: {current_user.email}")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Inactive user account"
@@ -364,7 +475,9 @@ def create_user(
             name=name.strip(),
             hashed_password=hashed_password,
             is_admin=is_admin,
-            is_active=True
+            is_active=True,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow()
         )
 
         db.add(user)
@@ -401,6 +514,7 @@ def change_password(db: Session, user: models.User, old_password: str, new_passw
             )
 
         user.hashed_password = get_password_hash(new_password)
+        user.password_changed_at = datetime.utcnow()
         user.updated_at = datetime.utcnow()
         db.commit()
 
@@ -435,6 +549,7 @@ def reset_password(db: Session, email: str, new_password: str) -> bool:
             )
 
         user.hashed_password = get_password_hash(new_password)
+        user.password_changed_at = datetime.utcnow()
         user.updated_at = datetime.utcnow()
         db.commit()
 
@@ -463,7 +578,7 @@ def update_user_profile(
         if name is not None:
             user.name = name.strip()
         if avatar is not None:
-            user.avatar = avatar.strip() if avatar else None
+            user.avatar_url = avatar.strip() if avatar else None
 
         user.updated_at = datetime.utcnow()
         db.commit()

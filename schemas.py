@@ -150,14 +150,15 @@ class DesignCategory(DesignCategoryBase):
         from_attributes = True
 
 
+# ИСПРАВЛЕНИЕ 1: DesignBase - Уменьшены требования к минимальной длине
 class DesignBase(BaseModel):
-    title: str = Field(min_length=5, max_length=255)
-    title_uk: str = Field(min_length=5, max_length=255)
-    title_en: str = Field(min_length=5, max_length=255)
+    title: str = Field(min_length=2, max_length=255)  # БЫЛО: min_length=5
+    title_uk: str = Field(min_length=2, max_length=255)  # БЫЛО: min_length=5
+    title_en: str = Field(min_length=2, max_length=255)  # БЫЛО: min_length=5
     category_id: str = Field(min_length=1, max_length=50)
     technology: str = Field(min_length=1, max_length=255)
-    description_uk: str = Field(min_length=50, max_length=2000)
-    description_en: str = Field(min_length=50, max_length=2000)
+    description_uk: str = Field(min_length=10, max_length=2000)  # БЫЛО: min_length=50
+    description_en: str = Field(min_length=10, max_length=2000)  # БЫЛО: min_length=50
     image_url: str = Field(min_length=1, max_length=500)
     figma_url: Optional[str] = Field(None, max_length=500)
     live_url: Optional[str] = Field(None, max_length=500)
@@ -181,14 +182,15 @@ class DesignCreate(DesignBase):
     meta_description_en: Optional[str] = Field(None, max_length=320)
 
 
+# ИСПРАВЛЕНИЕ 2: DesignUpdate - Уменьшены требования к минимальной длине
 class DesignUpdate(BaseModel):
-    title: Optional[str] = Field(None, min_length=5, max_length=255)
-    title_uk: Optional[str] = Field(None, min_length=5, max_length=255)
-    title_en: Optional[str] = Field(None, min_length=5, max_length=255)
+    title: Optional[str] = Field(None, min_length=2, max_length=255)  # БЫЛО: min_length=5
+    title_uk: Optional[str] = Field(None, min_length=2, max_length=255)  # БЫЛО: min_length=5
+    title_en: Optional[str] = Field(None, min_length=2, max_length=255)  # БЫЛО: min_length=5
     category_id: Optional[str] = Field(None, min_length=1, max_length=50)
     technology: Optional[str] = Field(None, min_length=1, max_length=255)
-    description_uk: Optional[str] = Field(None, min_length=50, max_length=2000)
-    description_en: Optional[str] = Field(None, min_length=50, max_length=2000)
+    description_uk: Optional[str] = Field(None, min_length=10, max_length=2000)  # БЫЛО: min_length=50
+    description_en: Optional[str] = Field(None, min_length=10, max_length=2000)  # БЫЛО: min_length=50
     image_url: Optional[str] = Field(None, min_length=1, max_length=500)
     figma_url: Optional[str] = Field(None, max_length=500)
     live_url: Optional[str] = Field(None, max_length=500)
@@ -399,9 +401,10 @@ class AboutPageResponse(AboutContent):
 
 # ============ СХЕМИ ВІДГУКІВ ============
 
+# ИСПРАВЛЕНИЕ 3: ReviewBase - Уменьшены требования к минимальной длине
 class ReviewBase(BaseModel):
-    text_uk: str = Field(min_length=20, max_length=1000)
-    text_en: str = Field(min_length=20, max_length=1000)
+    text_uk: str = Field(min_length=10, max_length=1000)  # БЫЛО: min_length=20
+    text_en: str = Field(min_length=10, max_length=1000)  # БЫЛО: min_length=20
     rating: int = Field(ge=1, le=5)
     company: Optional[str] = Field(None, max_length=255)
 
@@ -417,9 +420,10 @@ class ReviewCreateAnonymous(ReviewBase):
     author_email: EmailStr
 
 
+# ИСПРАВЛЕНИЕ 4: ReviewUpdate - Уменьшены требования к минимальной длине
 class ReviewUpdate(BaseModel):
-    text_uk: Optional[str] = Field(None, min_length=20, max_length=1000)
-    text_en: Optional[str] = Field(None, min_length=20, max_length=1000)
+    text_uk: Optional[str] = Field(None, min_length=10, max_length=1000)  # БЫЛО: min_length=20
+    text_en: Optional[str] = Field(None, min_length=10, max_length=1000)  # БЫЛО: min_length=20
     rating: Optional[int] = Field(None, ge=1, le=5)
     company: Optional[str] = Field(None, max_length=255)
     is_approved: Optional[bool] = None
@@ -447,11 +451,12 @@ class Review(ReviewBase):
 
 # ============ СХЕМИ FAQ ============
 
+# ИСПРАВЛЕНИЕ 6: FAQBase - Уменьшены требования к минимальной длине
 class FAQBase(BaseModel):
-    question_uk: str = Field(min_length=10, max_length=500)
-    question_en: str = Field(min_length=10, max_length=500)
-    answer_uk: str = Field(min_length=20, max_length=2000)
-    answer_en: str = Field(min_length=20, max_length=2000)
+    question_uk: str = Field(min_length=5, max_length=500)  # БЫЛО: min_length=10
+    question_en: str = Field(min_length=5, max_length=500)  # БЫЛО: min_length=10
+    answer_uk: str = Field(min_length=10, max_length=2000)  # БЫЛО: min_length=20
+    answer_en: str = Field(min_length=10, max_length=2000)  # БЫЛО: min_length=20
     sort_order: int = 0
 
 
@@ -461,11 +466,12 @@ class FAQCreate(FAQBase):
     slug_en: Optional[str] = Field(None, max_length=255)
 
 
+# ИСПРАВЛЕНИЕ 7: FAQUpdate - Уменьшены требования к минимальной длине
 class FAQUpdate(BaseModel):
-    question_uk: Optional[str] = Field(None, min_length=10, max_length=500)
-    question_en: Optional[str] = Field(None, min_length=10, max_length=500)
-    answer_uk: Optional[str] = Field(None, min_length=20, max_length=2000)
-    answer_en: Optional[str] = Field(None, min_length=20, max_length=2000)
+    question_uk: Optional[str] = Field(None, min_length=5, max_length=500)  # БЫЛО: min_length=10
+    question_en: Optional[str] = Field(None, min_length=5, max_length=500)  # БЫЛО: min_length=10
+    answer_uk: Optional[str] = Field(None, min_length=10, max_length=2000)  # БЫЛО: min_length=20
+    answer_en: Optional[str] = Field(None, min_length=10, max_length=2000)  # БЫЛО: min_length=20
     is_active: Optional[bool] = None
     sort_order: Optional[int] = None
     slug_uk: Optional[str] = Field(None, max_length=255)
@@ -515,13 +521,14 @@ def validate_phone_or_telegram(v: str) -> str:
     raise ValueError('Invalid phone number or Telegram username format')
 
 
+# ИСПРАВЛЕНИЕ 5: QuoteApplicationBase - Уменьшены требования к минимальной длине
 class QuoteApplicationBase(BaseModel):
     name: str = Field(min_length=2, max_length=255)
     email: EmailStr
     phone: Optional[str] = Field(None, max_length=50)
     project_type: str = Field(min_length=2, max_length=255)
     budget: Optional[str] = Field(None, max_length=255)
-    description: str = Field(min_length=20, max_length=2000)
+    description: str = Field(min_length=10, max_length=2000)  # БЫЛО: min_length=20
     package_id: Optional[int] = None
 
     @validator('phone')
